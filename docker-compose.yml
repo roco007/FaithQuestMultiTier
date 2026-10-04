@@ -1,0 +1,90 @@
+# ── FaithQuest local stack: NestJS API + Next.js frontend (+ optional MySQL) ─
+# Usage (from the repository root):
+#   cp backend/.env.example backend/.env   # once; fill in real JWT secrets
+#   docker compose up --build                # frontend :3000, api :3001
+#   docker compose exec api npm run prisma:seed   # once: starter catalogue
+#
+# The database is Aiven-hosted MySQL 8 (see DATABASE_URL in backend/.env), so no
+# database container is needed by default. For a fully offline stack:
+#   docker compose --profile local-db up --build
+# which also starts `db` on :3306 — point DATABASE_URL at
+# mysql://faithquest:faithquest@localhost:3306/faithquest in backend/.env.
+#
+# The frontend build needs NEXT_PUBLIC_API_URL at build time (NEXT_PUBLIC_ vars
+# are inlined). The default below points the browser at the host-mapped API;
+# override per environment:  NEXT_PUBLIC_API_URL=https://api.example.com \
+#   docker compose up --build frontend
+name: faithquest
+
+services:
+  # Optional local MySQL 8, only started with `--profile local-db`.
+  # Not needed for the default stack: backend/.env points at Aiven.
+  db:
+    image: mysql:8.4
+    profiles: ["local-db"]
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: faithquest-root
+      MYSQL_USER: faithquest
+      MYSQL_PASSWORD: faithquest
+      MYSQL_DATABASE: faithquest
+    ports:
+      # Host-mapped for local `mysql` / Prisma against the same DB the API uses.
+      - "3306:3306"
+    command:
+      # `utf8mb4` everywhere so the emoji in seeded copy round-trips, and MySQL 8's
+      # default `caching_sha2_password` is kept (the mariadb driver speaks it).
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+    volumes:
+      - mysqldata:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-u", "root", "-pfaithquest-root"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      # Only present with `--profile local-db`; `required: false` keeps the
+      # default (Aiven-backed) stack startable without the local container.
+      db:
+        condition: service_healthy
+        required: false
+    env_file:
+      - ./backend/.env
+    ports:
+      - "3001:3001"
+    healthcheck:
+      # `wget` ships with the node:22-alpine image; curl does not.
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3001/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  frontend:
+    build:
+      # The Next.js app now lives in its own folder; the Dockerfile and the
+      # build context both move with it.
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL-http://localhost:3001}
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    environment:
+      # The Next.js server only serves; the API base above is what browsers use.
+      PORT: "3000"
+
+volumes:
+  mysqldata:

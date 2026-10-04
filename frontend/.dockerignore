@@ -1,0 +1,12 @@
+# FaithQuest frontend — Docker build context excludes.
+# The build context is this folder, so the sibling `backend/` is never part of it.
+node_modules
+.next
+.env*.local
+*.log
+npm-debug.log*
+.idea
+.vscode
+*.swp
+.DS_Store
+.git

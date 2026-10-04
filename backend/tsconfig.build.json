@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // With `test/` and `prisma/seed.ts` excluded, every remaining input lives
+    // under `src/`, so TypeScript 6 requires `rootDir` to be stated explicitly.
+    // This keeps `dist/main.js` (not `dist/src/main.js`) for `nest start`.
+    "rootDir": "./src"
+  },
+  "exclude": ["node_modules", "test", "dist", "**/*spec.ts", "prisma/seed.ts"]
+}

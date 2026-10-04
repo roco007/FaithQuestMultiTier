@@ -1,0 +1,61 @@
+# ── Secrets & machine-local config ──────────────────────────────────────────
+# `backend/.env` holds a live database URL (with credentials) and the JWT
+# signing secrets. It must never be committed; `.env.example` is the tracked
+# template that documents the shape without the values.
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# ── Dependencies ────────────────────────────────────────────────────────────
+node_modules/
+
+# ── Build output ────────────────────────────────────────────────────────────
+# `dist-e2e/` is the compiled e2e suite produced by `npm run test:e2e`.
+backend/dist/
+backend/dist-e2e/
+frontend/.next/
+frontend/out/
+frontend/.vercel/
+# Incremental-compilation caches from `tsc --build`.
+*.tsbuildinfo
+
+# ── Generated code ──────────────────────────────────────────────────────────
+# The Prisma client, derived entirely from `prisma/schema.prisma` (which IS
+# tracked). Regenerate with `npm run prisma:generate` after `npm ci`; the
+# backend Dockerfile already runs `prisma generate` itself.
+backend/src/generated/
+
+# ── Logs & runtime scratch ──────────────────────────────────────────────────
+*.log
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+nohup.out
+*.pid
+.cache/
+
+# ── Test output ─────────────────────────────────────────────────────────────
+coverage/
+.nyc_output/
+
+# ── OS & editor noise ───────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ── Python tooling (AR asset scripts) ───────────────────────────────────────
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.Python
+
+# Intermediate output from `make_ar.py`.
+ar_character.png
+scripts/ar_character.png
+*.rgba.png

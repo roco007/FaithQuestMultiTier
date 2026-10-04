@@ -1,0 +1,96 @@
+{
+  "format": "faithquest-hunt",
+  "version": 1,
+  "exportedAt": "2026-09-30T11:46:54.137Z",
+  "order": {
+    "start": "START",
+    "stops": [
+      {
+        "position": 1,
+        "name": "L2",
+        "isEnd": false
+      },
+      {
+        "position": 2,
+        "name": "L1",
+        "isEnd": true
+      }
+    ],
+    "summary": "START -> L2 -> L1 (the game must end here)"
+  },
+  "game": {
+    "id": "0",
+    "title": "Test Game",
+    "description": "",
+    "creatorName": "Raj",
+    "createdAt": "2026-09-30T09:47:53.213Z",
+    "updatedAt": "2026-09-30T11:44:17.522Z",
+    "endAnnouncement": "Congratulations, seeker! You have found the treasure. The hunt is complete!",
+    "endCharacterAssetId": "found-hidden-treasure",
+    "characters": [
+      {
+        "id": "char_munx7z4x_1",
+        "order": 1,
+        "name": "L1",
+        "subtitle": "",
+        "latitude": 19.377705027288393,
+        "longitude": 72.81537543428006,
+        "altitudeMeters": 0,
+        "radiusMeters": 250,
+        "characterType": "guardian",
+        "characterAssetId": "video-test-transparent",
+        "sponsorBannerId": null,
+        "hint": "Hint leading to L1",
+        "key": "A3QESS",
+        "questions": [
+          {
+            "id": "q_munx7ute_2",
+            "type": "text",
+            "prompt": "q1",
+            "answers": [
+              "a1"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "char_munx9ee9_2",
+        "order": 2,
+        "name": "L2",
+        "subtitle": "",
+        "latitude": 19.37745,
+        "longitude": 72.816536,
+        "altitudeMeters": 0,
+        "radiusMeters": 250,
+        "characterType": "guardian",
+        "characterAssetId": "char-2",
+        "sponsorBannerId": null,
+        "hint": "Hint leading to L2",
+        "key": "5VHLBV",
+        "questions": [
+          {
+            "id": "q_munx96ih_4",
+            "type": "mcq",
+            "prompt": "q2",
+            "options": [
+              {
+                "id": "q_munx98hb_6",
+                "text": "a2",
+                "isCorrect": true
+              },
+              {
+                "id": "q_munx98hb_7",
+                "text": "a3",
+                "isCorrect": false
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "route": [
+      "char_munx9ee9_2",
+      "char_munx7z4x_1"
+    ]
+  }
+}

@@ -1,0 +1,19 @@
+# FaithQuest backend — Docker build context excludes.
+# Never ship secrets, local state, or build output into the image.
+node_modules
+dist
+dist-e2e
+.env
+.env.*.local
+coverage
+.nyc_output
+logs
+*.log
+npm-debug.log*
+prisma/*.db
+prisma/*.db-journal
+.idea
+.vscode
+*.swp
+.DS_Store
+nohup.out

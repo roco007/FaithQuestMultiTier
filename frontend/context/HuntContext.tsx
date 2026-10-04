@@ -1,0 +1,503 @@
+'use client';
+
+
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useState,
+  useCallback,
+  useMemo,
+} from 'react';
+import { HuntGame, HuntProgress, HuntGameDraft, HuntCharacter } from '../types/hunt';
+import {
+  GameRepository,
+  localGameRepository,
+  nextGameId,
+  decodeGameShareCode,
+  extractGameId,
+  extractShareCode,
+} from '../services/gameRepository';
+import { remoteGameRepository } from '../services/remoteGameRepository';
+import { isApiConfigured } from '../api/client';
+import { useAuth } from './AuthContext';
+import { generateCharacterKey, keyMatches } from '../utils/keys';
+import {
+  buildRoute,
+  characterMetAt,
+  dealPublishedRoute,
+  isTreasureStop,
+  resolveRoute,
+} from '../utils/huntRoute';
+
+export interface DiscoverResult {
+  /**
+   * The character the team met at the stop they just cleared — the *next*
+   * location's character, which is what plays its video and hands over
+   * the clue, or the end-of-hunt character on the stop that finishes the hunt.
+   * The stop itself (its key, questions and place) is the entry before it in
+   * the route.
+   */
+  character: HuntCharacter;
+  isFinal: boolean;
+  nextCharacter: HuntCharacter | null;
+  game: HuntGame;
+  progress: HuntProgress;
+}
+
+interface HuntContextType {
+  /** Games authored on this device (creator role). */
+  createdGames: HuntGame[];
+  /** The hunt the player has joined and is currently playing. */
+  activeGame: HuntGame | null;
+  activeProgress: HuntProgress | null;
+  /**
+   * The active hunt's stops in THIS team's order — their shuffled locations with
+   * the treasure last (or the authored order for progress saved before routes
+   * existed). Use this, never `activeGame.characters`, for anything the player
+   * experiences as a sequence.
+   */
+  activeRoute: HuntCharacter[];
+  /** Next undiscovered location in the active hunt (null when finished). */
+  currentCharacter: HuntCharacter | null;
+  /**
+   * The character standing at `currentCharacter`'s pin: the **next** location's
+   * character, since a stop owns its place (pin, radius, clue, key, questions)
+   * while the figure on it is the one that hands over the clue for the place it
+   * belongs to. On the last stop there is no next location, so the end-of-hunt
+   * character stands there instead (see `characterMetAt`).
+   */
+  metCharacter: HuntCharacter | null;
+  isLoading: boolean;
+  createGame: (draft: HuntGameDraft) => Promise<HuntGame>;
+  updateGame: (game: HuntGame) => Promise<void>;
+  deleteGame: (id: string) => Promise<void>;
+  /** Accepts a short ID ("FQ-7K2M9X"), bare body, share code, or share message.
+   *  `teamName` is what the player typed on the join screen — the team name a
+   *  signed-in player chose, or the username a guest picked — and is stored with
+   *  this round's progress. */
+  joinGame: (input: string, teamName?: string) => Promise<HuntGame>;
+  leaveGame: () => Promise<void>;
+  /** Marks the current character discovered; returns the clue payload to show.
+   *  `presentedKey` is the key the player hands the character — it must match
+   *  the character's discovery key or an Error is thrown. */
+  discoverCurrentCharacter: (presentedKey?: string) => Promise<DiscoverResult | null>;
+  getProgressFor: (gameId: string) => Promise<HuntProgress | null>;
+  /** Re-reads games/progress from storage (after external edits). */
+  reload: () => Promise<void>;
+}
+
+/**
+ * Shared key gate: throws the player-facing mismatch error unless
+ * `presentedKey` matches the location's discovery key. Exported so the AR
+ * camera can check the key *before* running a location's reveal questions —
+ * while the authoritative discovery still re-validates inside
+ * `discoverCurrentCharacter`, so no path records a discovery on a wrong key.
+ */
+export function assertPresentedKey(character: HuntCharacter, presentedKey?: string): void {
+  if (!keyMatches(presentedKey, character.key)) {
+    throw new Error(
+      "That key doesn't match. Use the key on screen — it is the one handed over for this " +
+        'location, either when your hunt opened or by the reveal at the stop before it.'
+    );
+  }
+}
+
+const HuntContext = createContext<HuntContextType | undefined>(undefined);
+
+/**
+ * Orders and stamps a draft into a persisted-ready game.
+ *
+ * `allocatedId` is the hunt number the repository has already reserved for a new
+ * hunt (see `nextGameId`). It is passed in rather than computed here because the
+ * hunt list is React state in the provider, and it must reflect the games
+ * actually on the device.
+ */
+function normaliseGame(
+  draft: HuntGameDraft,
+  existing?: HuntGame,
+  allocatedId?: string
+): HuntGame {
+  const now = new Date().toISOString();
+  const sorted = [...draft.characters].sort((a, b) => a.order - b.order);
+
+  // A hunt tags at most one treasure location: the first flagged one in authored
+  // order wins, later flags are cleared, and the treasure is stored last so the
+  // authored order itself reads route-shaped in exports and share codes. A hunt
+  // that tags none is not stamped at all — its whole list is dealt, and the last
+  // location of the dealt order is where that hunt ends. The legacy
+  // `isCongratulations` name is read but never written.
+  let treasure: HuntCharacter | null = null;
+  const walkable: HuntCharacter[] = [];
+  for (const character of sorted) {
+    if (isTreasureStop(character)) {
+      if (!treasure) {
+        const flagged = { ...character, isTreasure: true };
+        delete flagged.isCongratulations;
+        treasure = flagged;
+      } else {
+        const clone = { ...character };
+        delete clone.isTreasure;
+        delete clone.isCongratulations;
+        walkable.push(clone);
+      }
+      continue;
+    }
+    walkable.push(character);
+  }
+
+  // Nothing is stamped when no location is tagged: an untagged hunt is dealt
+  // whole, so its last dealt location is where that hunt ends (and which place
+  // that is changes with every publish).
+  // The congratulations screen is the announcement plus the character added
+  // next to it, so a hunt cannot be published without both.
+  const endCharacterAssetId = draft.endCharacterAssetId?.trim() || '';
+  if (!endCharacterAssetId) {
+    throw new Error(
+      'Choose the end-of-hunt character: the character shown together with the End-of-Hunt ' +
+        'Announcement when a team clears the treasure. Pick one from the camera roster next to ' +
+        'the announcement, and publish again.'
+    );
+  }
+
+  const ordered = treasure ? [...walkable, treasure] : [...walkable];
+  const characters = ordered.map((ch, index) => ({
+    ...ch,
+    order: index + 1,
+    // Backfill discovery keys so every published location needs one.
+    key: ch.key?.trim() || generateCharacterKey(),
+  }));
+
+  return {
+    id: existing?.id ?? draft.id ?? allocatedId ?? nextGameId([]),
+    title: draft.title.trim(),
+    description: draft.description.trim(),
+    creatorName: draft.creatorName.trim() || 'Mystery Creator',
+    createdAt: existing?.createdAt ?? draft.createdAt ?? now,
+    updatedAt: now,
+    endAnnouncement: draft.endAnnouncement.trim(),
+    endCharacterAssetId,
+    characters,
+    // Every press of Publish / Save Changes deals a new order and shares it: the
+    // walkable locations shuffled with a tagged treasure held back for last, or
+    // the whole list shuffled when nothing is tagged (so the hunt ends wherever
+    // this deal finishes). It travels in the share link, the share code and the
+    // exported file; teams already walking keep the order they joined with.
+    route: dealPublishedRoute(characters),
+    // Server identity is preserved across edits and never invented: the draft
+    // has none, and losing it on a re-save would silently un-sync the hunt and
+    // strip the share code from every link already sent out.
+    ...(existing?.shareCode ? { shareCode: existing.shareCode } : {}),
+  };
+}
+
+export const HuntProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  // Adapter selection is the *only* change here (plan §3): the REST-backed
+  // repository whenever a backend is configured, today's localStorage
+  // repository otherwise. `reload` depends on `repository`, so flipping the
+  // session re-runs the initial load.
+  //
+  // Signed-out players use the remote repository too. They always have: it was
+  // previously switched off for them, which meant an anonymous player's round
+  // never reached the server at all and the creator's report could not see
+  // them — the people a hunt is advertised to. The remote adapter still writes
+  // every local read/write first and swallows server failures, so the
+  // offline-first contract is unchanged.
+  // `authStatus` is read for the *authoring* guard in `createGame` only. Joining
+  // and playing no longer depend on it — that is the change above.
+  const { status: authStatus } = useAuth();
+  const repository: GameRepository = useMemo(
+    () => (isApiConfigured() ? remoteGameRepository : localGameRepository),
+    [],
+  );
+
+  const [createdGames, setCreatedGames] = useState<HuntGame[]>([]);
+  const [activeGame, setActiveGame] = useState<HuntGame | null>(null);
+  const [activeProgress, setActiveProgress] = useState<HuntProgress | null>(null);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+
+  const reload = useCallback(async () => {
+    try {
+      const games = await repository.listGames();
+      setCreatedGames(games);
+
+      const activeId = await repository.getActiveGameId();
+      if (activeId) {
+        const [game, progress] = await Promise.all([
+          repository.getGame(activeId),
+          repository.getProgress(activeId),
+        ]);
+        setActiveGame(game);
+        setActiveProgress(progress);
+      } else {
+        setActiveGame(null);
+        setActiveProgress(null);
+      }
+    } catch (err) {
+      console.error('Failed to load hunt data:', err);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [repository]);
+
+  useEffect(() => {
+    reload();
+  }, [reload]);
+
+  const createGame = useCallback(
+    async (draft: HuntGameDraft): Promise<HuntGame> => {
+      // Creating a hunt is a signed-in action; joining one is not. The screens
+      // that call this already show a sign-in prompt, so reaching this throw
+      // means the guard was bypassed — fail loudly rather than silently writing
+      // a hunt to a session nobody owns.
+      if (authStatus !== 'authenticated') {
+        throw new Error(
+          'Sign in to create a hunt. Joining a hunt does not need an account.'
+        );
+      }
+      const existing = draft.id
+        ? createdGames.find(g => g.id === draft.id) ?? undefined
+        : undefined;
+      // A brand-new hunt takes the next number on the device; an edit keeps the
+      // number it already has so shared codes and invite links still resolve.
+      const allocatedId = existing ? undefined : nextGameId(createdGames.map(g => g.id));
+      const game = normaliseGame(draft, existing, allocatedId);
+      await repository.saveGame(game);
+      await reload();
+      return game;
+    },
+    [authStatus, createdGames, repository, reload]
+  );
+
+  const updateGame = useCallback(
+    async (game: HuntGame): Promise<void> => {
+      await repository.saveGame(game);
+      await reload();
+    },
+    [repository, reload]
+  );
+
+  const deleteGame = useCallback(
+    async (id: string): Promise<void> => {
+      await repository.deleteGame(id);
+      await reload();
+    },
+    [repository, reload]
+  );
+
+  const getProgressFor = useCallback(
+    async (gameId: string): Promise<HuntProgress | null> => repository.getProgress(gameId),
+    [repository]
+  );
+
+  const joinGame = useCallback(
+    async (input: string, teamName?: string): Promise<HuntGame> => {
+      const trimmed = input.trim();
+      if (!trimmed) {
+        throw new Error('Enter a game ID or share code to join.');
+      }
+
+      // 1) Full self-contained share code (cross-device, no backend needed).
+      //    `extractShareCode` also digs the payload out of a pasted invite link,
+      //    so copying the URL into this box joins exactly like tapping it.
+      const shareCode = extractShareCode(trimmed);
+      let game = shareCode ? decodeGameShareCode(shareCode) : null;
+
+      // 2) Short ID — extracted from raw ID or a pasted share message.
+      if (!game) {
+        const id = extractGameId(trimmed);
+        if (id) {
+          game = await repository.getGame(id);
+        }
+      }
+
+      if (!game) {
+        throw new Error(
+          'Game not found. Ask the creator to share the full game code and paste it here.'
+        );
+      }
+      if (!game.characters || game.characters.length === 0) {
+        throw new Error('This game has no characters placed yet.');
+      }
+
+      // Backfill discovery keys for games saved before keys existed, so the
+      // key chain works for legacy share codes too.
+      game = {
+        ...game,
+        characters: game.characters.map(ch =>
+          ch.key?.trim() ? ch : { ...ch, key: generateCharacterKey() }
+        ),
+      };
+
+      // Persist locally so future joins by short ID also work on this device.
+      await repository.saveGame(game);
+
+      let progress = await repository.getProgress(game.id);
+      // The join screen always asks for a name; keep whatever the round already
+      // has when this call arrives without one (e.g. a programmatic re-join).
+      const resolvedTeamName = teamName?.trim() || progress?.teamName;
+      if (!progress) {
+        progress = {
+          gameId: game.id,
+          joinedAt: new Date().toISOString(),
+          // Pin this round's order now, so a creator re-publishing mid-hunt
+          // cannot move the stops under this team's feet: the order the hunt was
+          // published with (every publish deals a fresh one, and it travels in
+          // the share link), or a deal of the walkable locations for a hunt saved
+          // before routes existed. Progress that already exists keeps the route
+          // it joined with.
+          route: game.route?.length ? [...game.route] : buildRoute(game.characters),
+          discoveredCharacterIds: [],
+          ...(resolvedTeamName ? { teamName: resolvedTeamName } : {}),
+          status: 'active',
+          completedAt: null,
+        };
+        await repository.saveProgress(progress);
+      } else if (resolvedTeamName && resolvedTeamName !== progress.teamName) {
+        // Re-joining under a new name updates the name only — the pinned route
+        // and everything discovered through it stay exactly where they were.
+        progress = { ...progress, teamName: resolvedTeamName };
+        await repository.saveProgress(progress);
+      }
+
+      await repository.setActiveGameId(game.id);
+      await reload();
+      return game;
+    },
+    [repository, reload]
+  );
+
+  const leaveGame = useCallback(async (): Promise<void> => {
+    await repository.setActiveGameId(null);
+    setActiveGame(null);
+    setActiveProgress(null);
+  }, [repository]);
+
+  /**
+   * This team's stops exactly as they are played: the dealt location order with
+   * the treasure last, each location carrying everything its creator authored
+   * for it — coordinates, clue, character, questions and key (see
+   * `resolveRoute`). Anything the player experiences as a sequence reads from
+   * here, never from `activeGame.characters`.
+   */
+  const activeRoute = useMemo<HuntCharacter[]>(
+    () => (activeGame ? resolveRoute(activeGame, activeProgress) : []),
+    [activeGame, activeProgress]
+  );
+
+  const discoverCurrentCharacter = useCallback(
+    async (presentedKey?: string): Promise<DiscoverResult | null> => {
+      if (!activeGame || !activeProgress) return null;
+
+      const discovered = new Set(activeProgress.discoveredCharacterIds);
+      // The team's next stop is the first undiscovered one in THEIR route —
+      // never the authored order, so following another team's path records
+      // nothing.
+      const nextCharacter = activeRoute.find(ch => !discovered.has(ch.id)) ?? null;
+      if (!nextCharacter) return null;
+
+      // Every stop is opened by its own key: the one handed over for it, either
+      // when the round opened (the team's first location) or by the reveal at
+      // the stop before it.
+      assertPresentedKey(nextCharacter, presentedKey);
+
+      const discoveredIds = [...activeProgress.discoveredCharacterIds, nextCharacter.id];
+      const isComplete = discoveredIds.length >= activeRoute.length;
+
+      const updatedProgress: HuntProgress = {
+        ...activeProgress,
+        discoveredCharacterIds: discoveredIds,
+        status: isComplete ? 'completed' : 'active',
+        completedAt: isComplete ? new Date().toISOString() : activeProgress.completedAt ?? null,
+      };
+      await repository.saveProgress(updatedProgress);
+      setActiveProgress(updatedProgress);
+
+      const nextUp = activeRoute.find(ch => !discoveredIds.includes(ch.id)) ?? null;
+
+      return {
+        // The character they met, not the stop they walked to: that is the one
+        // that plays its video and hands over the next clue. At the last
+        // stop `nextUp` is null, so it is the end-of-hunt character.
+        character:
+          characterMetAt(activeRoute, nextCharacter.id, activeGame.endCharacterAssetId) ??
+          nextCharacter,
+        isFinal: isComplete,
+        nextCharacter: nextUp,
+        game: activeGame,
+        progress: updatedProgress,
+      };
+    },
+    [activeGame, activeProgress, activeRoute, repository]
+  );
+
+  const currentCharacter = useMemo<HuntCharacter | null>(() => {
+    if (!activeProgress) return null;
+    const discovered = new Set(activeProgress.discoveredCharacterIds);
+    return activeRoute.find(ch => !discovered.has(ch.id)) ?? null;
+  }, [activeRoute, activeProgress]);
+
+  /**
+   * Who is standing at the current stop's pin — the next location's character,
+   * so the reveal (and the video it plays) belongs to the place the hand-over
+   * is sending the team to, not to the place they are standing in. On the last
+   * stop, where there is no next location, it is the end-of-hunt character: the
+   * team walks the final stretch to the character that will congratulate them,
+   * rather than to the same figure that just handed them the last clue.
+   */
+  const metCharacter = useMemo(
+    () =>
+      currentCharacter
+        ? characterMetAt(activeRoute, currentCharacter.id, activeGame?.endCharacterAssetId)
+        : null,
+    [activeRoute, currentCharacter, activeGame?.endCharacterAssetId]
+  );
+
+  const value = useMemo<HuntContextType>(
+    () => ({
+      createdGames,
+      activeGame,
+      activeProgress,
+      activeRoute,
+      currentCharacter,
+      metCharacter,
+      isLoading,
+      createGame,
+      updateGame,
+      deleteGame,
+      joinGame,
+      leaveGame,
+      discoverCurrentCharacter,
+      getProgressFor,
+      reload,
+    }),
+    [
+      createdGames,
+      activeGame,
+      activeProgress,
+      activeRoute,
+      currentCharacter,
+      isLoading,
+      createGame,
+      updateGame,
+      deleteGame,
+      joinGame,
+      leaveGame,
+      discoverCurrentCharacter,
+      getProgressFor,
+      reload,
+    ]
+  );
+
+  return <HuntContext.Provider value={value}>{children}</HuntContext.Provider>;
+};
+
+export const useHunt = (): HuntContextType => {
+  const context = useContext(HuntContext);
+  if (!context) {
+    throw new Error('useHunt must be used within a HuntProvider');
+  }
+  return context;
+};
+
+

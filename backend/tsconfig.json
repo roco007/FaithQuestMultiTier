@@ -1,0 +1,31 @@
+{
+  "compilerOptions": {
+    // NestJS 12 packages are ESM-only (`"type": "module"`), so this backend is
+    // an ES module project: `nodenext` resolution requires the explicit `.js`
+    // extension on every relative import in the emitted code. Relative imports
+    // below therefore point at the *compiled* file name (`./auth.module.js`
+    // resolves to `auth.module.ts` for TypeScript and to `auth.module.js` after
+    // the build) — this is what `nodenext` means by "import the output".
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "declaration": true,
+    "removeComments": true,
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "allowSyntheticDefaultImports": true,
+    "target": "ES2023",
+    "sourceMap": true,
+    "outDir": "./dist",
+    "incremental": true,
+    "skipLibCheck": true,
+    "strictNullChecks": true,
+    "noImplicitAny": false,
+    "strictBindCallApply": false,
+    "forceConsistentCasingInFileNames": false,
+    "noFallthroughCasesInSwitch": false,
+    "esModuleInterop": true,
+    "resolveJsonModule": true
+  },
+  "include": ["src/**/*", "test/**/*", "prisma/**/*"],
+  "exclude": ["node_modules", "dist"]
+}

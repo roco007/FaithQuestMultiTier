@@ -1,0 +1,442 @@
+// FaithQuest — Prisma schema.
+//
+// Prisma 7 notes (see the `prisma-upgrade-v7` skill references shipped with the CLI):
+//  * the generator is `prisma-client` and `output` is mandatory;
+//  * `moduleFormat = "cjs"` keeps the generated client compatible with the
+//    CommonJS build NestJS produces;
+//  * the datasource has no `url` — it lives in `prisma.config.ts`.
+//
+// The client is generated into `src/generated/prisma`, i.e. *inside* the NestJS
+// source tree, so `nest build` compiles it into `dist/`. Import it as
+// `from '../generated/prisma/client'`.
+//
+// MySQL 8 notes (Aiven-hosted in development):
+//  * Prisma maps a bare `String` to `VARCHAR(191)` — the longest *indexable*
+//    width under `utf8mb4` (MySQL cannot index a `TEXT` column without a prefix
+//    length, and Prisma does not generate prefix indexes). Columns that carry
+//    authored prose and are never indexed or sorted are annotated `@db.Text`,
+//    which has no length ceiling. Short slug-like values that *are* indexed
+//    (`QuestNode.category`) get an explicit `@db.VarChar(64)` instead.
+//    Getting this wrong truncates or rejects user-written hunt descriptions.
+//  * Prisma emits `utf8mb4_unicode_ci` for MySQL tables (Aiven's own default is
+//    `utf8mb4_0900_ai_ci`). Both are case- *and* accent-insensitive, so
+//    `email`/`username` uniqueness is case-insensitive — which is the intended
+//    auth behaviour.
+
+generator client {
+  // `prisma-client` defaults to ESM, which is what the backend needs: NestJS 12
+  // ships ESM-only packages, so the compiled output is ESM end to end.
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum UserRole {
+  USER
+  ADMIN
+  CREATOR
+}
+
+enum HuntStatus {
+  DRAFT
+  PUBLISHED
+  ACTIVE
+  COMPLETED
+  ARCHIVED
+}
+
+/// `CAMERA_QR` is the existing app's third puzzle kind (see `types/node.ts`
+/// `PuzzleType`), kept alongside the four quest kinds from the brief.
+enum QuestType {
+  LOCATION
+  PUZZLE
+  QUIZ
+  AR
+  CAMERA_QR
+}
+
+enum CompletionStatus {
+  COMPLETED
+  FAILED
+}
+
+enum ItemRarity {
+  COMMON
+  UNCOMMON
+  RARE
+  EPIC
+  LEGENDARY
+}
+
+// ---------------------------------------------------------------------------
+// Users & progress
+// ---------------------------------------------------------------------------
+
+model User {
+  id              String   @id @default(uuid())
+  email           String   @unique
+  username        String   @unique
+  passwordHash    String
+  displayName     String?  @db.Text
+  avatarUrl       String?  @db.Text
+  role            UserRole @default(USER)
+  totalXp         Int      @default(0)
+  level           Int      @default(1)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  progress        PlayerProgress?
+  completions     QuestCompletion[]
+  badges          UserBadge[]
+  inventory       UserInventory[]
+  huntsCreated    Hunt[]            @relation("HuntCreator")
+  huntMemberships HuntParticipant[]
+  sessions        RefreshSession[]
+}
+
+/// Persistent player state. Mirrors the shape the HUD already renders:
+/// `level`, `currentXp`, `xpForNextLevel`, `rankTitle` (see `types/game.ts`).
+model PlayerProgress {
+  id             String    @id @default(uuid())
+  userId         String    @unique
+  currentXp      Int       @default(0)
+  xpForNextLevel Int       @default(300)
+  /// A fixed, short label from `rankFor(level)` in `xp.service.ts`
+  /// ("Novice Seeker", "Faith Pilgrim"…), so a bounded varchar — which MySQL
+  /// requires for the literal default below (`TEXT` columns may only carry
+  /// *expression* defaults).
+  rankTitle      String    @default("Novice Seeker") @db.VarChar(64)
+  currentStreak  Int       @default(0)
+  longestStreak  Int       @default(0)
+  lastActiveAt   DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+/// Refresh tokens are stored hashed so a leaked database dump cannot be replayed.
+model RefreshSession {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Quests (the church-landmark catalogue, seeded from prisma/fixtures/church_nodes.json)
+// ---------------------------------------------------------------------------
+
+model QuestNode {
+  id            String    @id @default(uuid())
+  /// Stable slug from the existing JSON (`node_01_chapel`), so hunts, share
+  /// codes and local progress keep addressing the same location.
+  slug          String    @unique
+  title         String    @db.Text
+  /// `TEXT` may not carry a *literal* default in MySQL — only an expression one —
+  /// and MySQL then normalises the literal to `(_utf8mb4'\'\')` and stores that
+  /// text verbatim in the catalog. `dbgenerated` has to reproduce the normalised
+  /// form byte for byte (backslashes included), or `prisma migrate dev` reports
+  /// phantom drift on every run.
+  subtitle      String    @default(dbgenerated("(_utf8mb4\\'\\')")) @db.Text
+  description   String    @default(dbgenerated("(_utf8mb4\\'\\')")) @db.Text
+  type          QuestType
+  latitude      Decimal   @db.Decimal(10, 7)
+  longitude     Decimal   @db.Decimal(10, 7)
+  radiusMeters  Int       @default(50)
+  clue          String?   @db.Text
+  /// The puzzle payload exactly as `types/node.ts` describes it
+  /// (`funFact`, `scriptureRef`, MCQ options, scrambled letters, QR value…).
+  puzzle        Json?
+  /// Short slug (`exploration`, `wisdom`…). A prefix index is not needed because
+  /// MySQL cannot index a `TEXT` column at all, so this stays a bounded varchar —
+  /// see the `@@index([category])` below.
+  category      String?   @db.VarChar(64)
+  iconName      String?   @db.Text
+  xpReward      Int       @default(100)
+  isActive      Boolean   @default(true)
+  /// Explicit reward links — the existing catalogue grants one badge and one
+  /// item per landmark (`reward.badgeId` / `reward.itemId`).
+  rewardBadgeId String?
+  rewardItemId  String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  rewardBadge Badge?         @relation("QuestBadgeReward", fields: [rewardBadgeId], references: [id], onDelete: SetNull)
+  rewardItem  InventoryItem? @relation("QuestItemReward", fields: [rewardItemId], references: [id], onDelete: SetNull)
+  huntNodes   HuntNode[]
+  completions QuestCompletion[]
+
+  @@index([type])
+  @@index([category])
+}
+
+model QuestCompletion {
+  id             String           @id @default(uuid())
+  userId         String
+  questNodeId    String
+  status         CompletionStatus @default(COMPLETED)
+  xpEarned       Int              @default(0)
+  latitude       Decimal?         @db.Decimal(10, 7)
+  longitude      Decimal?         @db.Decimal(10, 7)
+  distanceMeters Int?
+  completedAt    DateTime         @default(now())
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  questNode QuestNode @relation(fields: [questNodeId], references: [id], onDelete: Restrict)
+
+  /// The anti-duplication guarantee: XP can only ever be granted once per quest.
+  @@unique([userId, questNodeId])
+  @@index([userId, completedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Hunts
+// ---------------------------------------------------------------------------
+
+model Hunt {
+  id                  String     @id @default(uuid())
+  title               String       @db.Text
+  description         String?      @db.Text
+  /// Short join code (e.g. "MQ7X91"), unique across the server.
+  shareCode           String     @unique
+  status              HuntStatus @default(DRAFT)
+  creatorId           String
+  /// Author-facing extras the existing creator screen already collects.
+  /// Same `TEXT`-default rule as `QuestNode.subtitle` above: an expression
+  /// default is the only kind MySQL accepts on a `TEXT` column, and the
+  /// normalised catalog form is `(_utf8mb4\'\')`.
+  endAnnouncement     String       @default(dbgenerated("(_utf8mb4\\'\\')")) @db.Text
+  endCharacterAssetId String?
+  /// The dealt order of `HuntNode` ids for this publish (`dealPublishedRoute`).
+  /// Kept on the hunt so "every publish deals a new order and it travels with
+  /// the hunt" keeps working, and a re-publish never reshuffles a live round
+  /// (that round's order is pinned on its `HuntParticipant`).
+  route               Json?
+  publishedAt         DateTime?
+  createdAt           DateTime   @default(now())
+  updatedAt           DateTime   @updatedAt
+
+  creator      User               @relation("HuntCreator", fields: [creatorId], references: [id], onDelete: Restrict)
+  nodes        HuntNode[]
+  participants HuntParticipant[]
+
+  @@index([creatorId])
+  @@index([status])
+}
+
+/// One stop of a hunt: a reference to an authored location plus everything the
+/// `HuntCharacter` shape needs (see `types/hunt.ts`).
+model HuntNode {
+  id               String   @id @default(uuid())
+  huntId           String
+  questNodeId      String
+  sequence         Int
+  /// `HuntCharacterType` — guardian | angel | monk | flame | oracle.
+  characterType    String   @default("guardian")
+  /// ID from `public/characters/manifest.json`. Asset *paths* are never stored,
+  /// so a shared hunt cannot inject arbitrary URLs.
+  characterAssetId String?
+  /// ID from `public/marketing/manifest.json`.
+  sponsorBannerId  String?
+  altitudeMeters   Int      @default(0)
+  /// The discovery key (K) a team presents to open this stop. Stored in the
+  /// normalised form `utils/keys.ts` compares against.
+  key              String?
+  /// The `HuntQuestion[]` gate (Q) asked once the key is accepted.
+  questions        Json?
+  /// True for the treasure location — dealt last by every publish.
+  isTreasure       Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  hunt      Hunt      @relation(fields: [huntId], references: [id], onDelete: Cascade)
+  questNode QuestNode @relation(fields: [questNodeId], references: [id], onDelete: Restrict)
+
+  @@unique([huntId, sequence])
+  @@unique([huntId, questNodeId])
+}
+
+model HuntParticipant {
+  id          String  @id @default(uuid())
+  huntId      String
+  /// A participant is either a signed-in player or an anonymous guest, never
+  /// neither — `userId` is nullable precisely so a guest who opened a share link
+  /// without an account still gets a row the creator can see. Exactly one of
+  /// `userId` / `guestToken` is non-null (enforced in `hunts.service.ts`, and by
+  /// the two unique indexes below letting `NULL`s through).
+  userId      String?
+  /// Opaque per-hunt bearer credential issued to a guest at join. 64 hex chars
+  /// (32 bytes of CSPRNG entropy) — unguessable, and scoped to a single hunt so
+  /// it can never be used to read or advance another player's round.
+  guestToken  String? @db.VarChar(64)
+  currentNode Int     @default(0)
+  completed   Boolean @default(false)
+  /// This team's pinned stop order (HuntNode ids), dealt on join.
+  route       Json?
+  /// `HuntNode` ids discovered so far, in order.
+  discoveredNodeIds Json?
+  /// The team name (or guest's chosen username) the player entered when they
+  /// joined — asked for on the join screen, stored per-hunt so the same player
+  /// can walk different hunts under different team names. Nullable because
+  /// participants created before this column existed have no answer to show.
+  teamName          String?   @db.VarChar(80)
+  joinedAt          DateTime  @default(now())
+  completedAt       DateTime?
+  /// Last heartbeat (join or stop clear). Drives the creator dashboard's
+  /// "playing now" column: a row seen within ACTIVE_WINDOW_MINUTES is live.
+  lastSeenAt        DateTime?
+
+  hunt         Hunt                  @relation(fields: [huntId], references: [id], onDelete: Cascade)
+  user         User?                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  checkpoints  HuntCheckpointEvent[]
+
+  /// Both indexes are needed, and neither is redundant. MySQL treats every NULL
+  /// in a unique index as distinct, so `huntId_userId` still enforces "one row
+  /// per player" while letting every guest through, and `huntId_guestToken`
+  /// mirrors it for guests. Between them: exactly one row per identity.
+  @@unique([huntId, userId])
+  @@unique([huntId, guestToken])
+  @@index([userId])
+  @@index([huntId, joinedAt])
+}
+
+/// One stop cleared by one player, with the clock on it.
+///
+/// This is the *only* place a per-checkpoint time exists: `HuntParticipant`
+/// records which stops were cleared (`discoveredNodeIds`) but never when, and a
+/// JSON array cannot carry a timestamp per element. Rows are append-only and
+/// never updated, so a player's timeline is the honest order they arrived in.
+model HuntCheckpointEvent {
+  id            String   @id @default(uuid())
+  participantId String
+  huntId        String
+  /// The `HuntNode` cleared.
+  nodeId        String
+  /// 1-based position in *this player's* route. The route is shuffled per
+  /// player, so "stop 3" has to mean their third stop, not hunt `sequence`.
+  routePosition Int
+  /// Server clock at accept. Never a client-supplied time: a client that could
+  /// set this could forge its own report.
+  reachedAt     DateTime @default(now())
+  /// Milliseconds from `joinedAt` to `reachedAt`, denormalised so the dashboard
+  /// never has to pair each row back up with its participant to draw a duration.
+  elapsedMs     Int
+
+  participant HuntParticipant @relation(fields: [participantId], references: [id], onDelete: Cascade)
+
+  /// Makes a replayed `discover` (the offline queue re-sending) a no-op rather
+  /// than a second timeline entry.
+  @@unique([participantId, nodeId])
+  @@index([huntId, reachedAt])
+  @@index([participantId, routePosition])
+}
+
+// ---------------------------------------------------------------------------
+// Badges & inventory
+// ---------------------------------------------------------------------------
+
+model Badge {
+  id          String   @id @default(uuid())
+  /// Stable id from the existing `INITIAL_PLAYER_PROGRESS.badges`
+  /// (`badge_first_step`), so quest rewards keep pointing at the same badge.
+  slug        String   @unique
+  name        String   @unique
+  description String      @db.Text
+  iconUrl     String? @db.Text
+  /// Either an explicit marker (`{"type":"quest_reward"}`) or an achievement
+  /// rule the evaluator understands:
+  /// `quests_completed` | `level` | `hunts_completed` | `streak`.
+  requirement Json
+  /// Short slug, matching `QuestNode.category` (`exploration`, `wisdom`…).
+  category    String?     @db.VarChar(64)
+  createdAt   DateTime @default(now())
+
+  users      UserBadge[]
+  questNodes QuestNode[]  @relation("QuestBadgeReward")
+}
+
+model UserBadge {
+  id         String   @id @default(uuid())
+  userId     String
+  badgeId    String
+  unlockedAt DateTime @default(now())
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  badge Badge @relation(fields: [badgeId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, badgeId])
+}
+
+model InventoryItem {
+  id          String     @id @default(uuid())
+  /// Stable id from the existing catalogue (`item_azure_shard`).
+  slug        String     @unique
+  name        String     @unique
+  description String? @db.Text
+  rarity      ItemRarity @default(COMMON)
+  iconUrl     String? @db.Text
+  metadata    Json?
+  createdAt   DateTime   @default(now())
+
+  users      UserInventory[]
+  questNodes QuestNode[]    @relation("QuestItemReward")
+}
+
+model UserInventory {
+  id         String   @id @default(uuid())
+  userId     String
+  itemId     String
+  quantity   Int      @default(1)
+  obtainedAt DateTime @default(now())
+
+  user User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  item InventoryItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, itemId])
+}
+
+// ---------------------------------------------------------------------------
+// Share links
+// ---------------------------------------------------------------------------
+
+/// A classic store-and-redirect short link: the 6-character code that appears
+/// in an invite URL (`/g/MQ7X91`) standing for the full deep link — payload
+/// and all — so a 13 KB self-contained invite can be handed around as ~40
+/// characters of URL.
+///
+/// `target` deliberately holds only what follows the origin (`/games#join=…`),
+/// never an absolute URL. The resolver issues a *relative* redirect, which by
+/// construction can only land on the origin serving it — that is what stops
+/// this table from being usable as an open redirector for phishing links.
+model ShortLink {
+  /// 6 characters from the shared 32-symbol alphabet (see `short-code.ts`).
+  code       String   @id @db.VarChar(8)
+  /// Path + fragment of the invite, origin stripped. `Text`, not `VarChar`: a
+  /// self-contained invite is tens of KB once the hunt rides in the fragment,
+  /// and MySQL would reject it at a 191-char (or 65,535-byte) ceiling.
+  target     String   @db.Text
+  /// sha256 of `target` — fixed 64 hex chars, hence `Char` rather than the
+  /// `VarChar` the schema convention reserves for slug-like values. Lets
+  /// re-sharing the same hunt hand back its existing code instead of writing
+  /// a duplicate row, so a flood of identical requests grows nothing.
+  targetHash String   @unique @db.Char(64)
+  /// Minting is allowed before sign-in (`@OptionalAuth`), so this is nullable.
+  createdBy  String?
+  /// How many times the link has been opened.
+  hits       Int      @default(0)
+  createdAt  DateTime @default(now())
+}

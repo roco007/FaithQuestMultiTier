@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // Compiled with plain `tsc` (not `nest build`) so decorator metadata is
+    // emitted and Nest DI works. `tsx` cannot run this spec: esbuild strips
+    // `emitDecoratorMetadata`, which leaves every injected constructor
+    // parameter `undefined` ("Cannot read properties of undefined").
+    "outDir": "./dist-e2e",
+    "rootDir": ".",
+    "incremental": false
+  },
+  "include": ["src/**/*", "test/app.e2e-spec.ts"],
+  "exclude": ["node_modules", "dist", "dist-e2e", "src/**/*.spec.ts", "prisma/seed.ts"]
+}
