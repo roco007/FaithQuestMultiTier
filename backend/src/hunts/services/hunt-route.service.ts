@@ -80,8 +80,100 @@ export class HuntRouteService {
   deal<T extends Dealable<unknown>>(nodes: T[]): T[] {
     const treasure = nodes.find((node) => node.isTreasure) ?? null;
     const walkable = nodes.filter((node) => !node.isTreasure);
-    const shuffled = this.shuffle(walkable);
-    return treasure ? [...shuffled, treasure] : shuffled;
+    const pool = walkable.length >= 2 || !treasure ? nodes : walkable;
+    const effectiveTreasure = pool === nodes ? null : treasure;
+    const effectiveWalkable = pool === nodes ? nodes : walkable;
+
+    const shuffled = this.shuffle(effectiveWalkable);
+    return effectiveTreasure ? [...shuffled, effectiveTreasure] : shuffled;
+  }
+
+  /**
+   * Deals a route variation that has not been used by any existing player yet,
+   * or if all variations have been explored, picks among the least-used variations.
+   *
+   * Example (2 locations L1 and L2):
+   * - Player 1 (no existing routes): [L2, L1]
+   * - Player 2 (existing: [L2, L1]): [L1, L2]
+   * - Player 3 (existing: [L2, L1], [L1, L2]): [L2, L1] (least used / round-robin)
+   */
+  dealUniqueRoute<T extends Dealable<unknown>>(
+    nodes: T[],
+    existingRoutes: string[][],
+  ): string[] {
+    if (nodes.length === 0) return [];
+    if (nodes.length === 1) return [nodes[0].id];
+
+    const treasure = nodes.find((node) => node.isTreasure) ?? null;
+    const walkable = nodes.filter((node) => !node.isTreasure);
+
+    // If all or all-but-one are flagged as treasure (e.g. legacy default), permute all nodes.
+    const effectiveTreasure = walkable.length < 2 && nodes.length >= 2 ? null : treasure;
+    const effectiveWalkable = effectiveTreasure ? walkable : nodes;
+
+    const usageCounts = new Map<string, number>();
+    for (const r of existingRoutes) {
+      if (Array.isArray(r) && r.length > 0) {
+        const key = r.join('->');
+        usageCounts.set(key, (usageCounts.get(key) ?? 0) + 1);
+      }
+    }
+
+    const walkableIds = effectiveWalkable.map((n) => n.id);
+    const k = walkableIds.length;
+
+    if (k <= 7) {
+      // Start from the reversed authored list so the first variation differs from the authored order
+      const reversedIds = [...walkableIds].reverse();
+      const perms = this.generatePermutations(reversedIds);
+
+      const candidates = perms.map((perm) =>
+        effectiveTreasure ? [...perm, effectiveTreasure.id] : perm,
+      );
+
+      let minCount = Infinity;
+      for (const cand of candidates) {
+        const key = cand.join('->');
+        const count = usageCounts.get(key) ?? 0;
+        if (count < minCount) {
+          minCount = count;
+        }
+      }
+
+      const best = candidates.find((cand) => {
+        const key = cand.join('->');
+        return (usageCounts.get(key) ?? 0) === minCount;
+      });
+
+      return best ?? candidates[0];
+    }
+
+    // For large k (> 7), permutation space is > 40,000:
+    for (let attempt = 0; attempt < 200; attempt++) {
+      const shuffled = this.shuffle(walkableIds);
+      const cand = effectiveTreasure ? [...shuffled, effectiveTreasure.id] : shuffled;
+      const key = cand.join('->');
+      if (!usageCounts.has(key) || usageCounts.get(key) === 0) {
+        return cand;
+      }
+    }
+
+    const shuffled = this.shuffle(walkableIds);
+    return effectiveTreasure ? [...shuffled, effectiveTreasure.id] : shuffled;
+  }
+
+  private generatePermutations<T>(items: T[]): T[][] {
+    if (items.length <= 1) return [items];
+    const result: T[][] = [];
+    for (let i = 0; i < items.length; i++) {
+      const current = items[i];
+      const remaining = [...items.slice(0, i), ...items.slice(i + 1)];
+      const subPerms = this.generatePermutations(remaining);
+      for (const perm of subPerms) {
+        result.push([current, ...perm]);
+      }
+    }
+    return result;
   }
 
   /**

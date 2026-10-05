@@ -410,21 +410,29 @@ export class HuntsService {
           lastSeenAt: new Date(),
         },
       });
-      return { ...toHuntDto(hunt), ...(guestToken ? { guestToken } : {}) };
+      const existingRoute = Array.isArray(existing.route)
+        ? (existing.route as unknown[]).filter((id): id is string => typeof id === 'string')
+        : undefined;
+      return {
+        ...toHuntDto(hunt),
+        ...(existingRoute ? { route: existingRoute } : {}),
+        ...(guestToken ? { guestToken } : {}),
+      };
     }
 
-    // Pin the order now: the hunt's published route when it has one, otherwise a
-    // fresh deal (hunts authored before routes existed).
-    const publishedRoute = Array.isArray(hunt.route)
-      ? (hunt.route as unknown[]).filter((id): id is string => typeof id === 'string')
-      : null;
-    const route = this.routes
-      .resolve(
-        hunt.nodes.map((node) => ({ id: node.id, isTreasure: node.isTreasure })),
-        null,
-        publishedRoute,
-      )
-      .map((stop) => stop.id);
+    // Query existing participants' routes to deal an unexplored variation
+    const existingParticipants = await this.prisma.huntParticipant.findMany({
+      where: { huntId: hunt.id },
+      select: { route: true },
+    });
+    const existingRoutes = existingParticipants
+      .map((p) => (Array.isArray(p.route) ? (p.route as string[]) : []))
+      .filter((r) => r.length > 0);
+
+    const route = this.routes.dealUniqueRoute(
+      hunt.nodes.map((node) => ({ id: node.id, isTreasure: node.isTreasure })),
+      existingRoutes,
+    );
 
     try {
       await this.prisma.huntParticipant.create({
@@ -450,7 +458,11 @@ export class HuntsService {
       }
     }
 
-    return { ...toHuntDto(hunt), ...(guestToken ? { guestToken } : {}) };
+    return {
+      ...toHuntDto(hunt),
+      route,
+      ...(guestToken ? { guestToken } : {}),
+    };
   }
 
   /**
@@ -834,11 +846,6 @@ export class HuntsService {
       };
     });
 
-    // A hunt may tag at most one treasure stop. When none is tagged, the last
-    // stop is the end, so a bare `nodeIds` list behaves like the published form.
-    if (!resolved.some((stop) => stop.isTreasure)) {
-      resolved[resolved.length - 1].isTreasure = true;
-    }
     return resolved;
   }
 

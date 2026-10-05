@@ -468,6 +468,17 @@ async function shadowSync(progress: HuntProgress): Promise<void> {
     }
 
     const serverProgress = await huntsApi.progress(serverId, joined.guestToken ?? undefined);
+    if (serverProgress.route && serverProgress.route.length > 0) {
+      const serverLocalRoute = toLocalIds(serverProgress.route, entry);
+      const existingLocal = await localGameRepository.getProgress(progress.gameId);
+      if (existingLocal) {
+        await localGameRepository.saveProgress({
+          ...existingLocal,
+          route: serverLocalRoute,
+        });
+      }
+    }
+
     const known = new Set(toLocalIds(serverProgress.discoveredCharacterIds, entry));
     const pending = progress.discoveredCharacterIds.filter((id) => !known.has(id));
     if (pending.length === 0) return;

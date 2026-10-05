@@ -129,6 +129,72 @@ describe('HuntRouteService.resolve', () => {
   });
 });
 
+describe('HuntRouteService.dealUniqueRoute', () => {
+  const routes = new HuntRouteService();
+
+  it('deals unique routes for players in a 2-location hunt and cycles when exhausted', () => {
+    const twoNodes = [
+      { id: 'loc1', isTreasure: false },
+      { id: 'loc2', isTreasure: false },
+    ];
+
+    // Player 1: no existing routes -> gets ['loc2', 'loc1']
+    const p1Route = routes.dealUniqueRoute(twoNodes, []);
+    assert.deepEqual(p1Route, ['loc2', 'loc1']);
+
+    // Player 2: existing route has ['loc2', 'loc1'] -> gets unexplored ['loc1', 'loc2']
+    const p2Route = routes.dealUniqueRoute(twoNodes, [p1Route]);
+    assert.deepEqual(p2Route, ['loc1', 'loc2']);
+
+    // Player 3: all 2 variations explored -> cycles to least-used variation
+    const p3Route = routes.dealUniqueRoute(twoNodes, [p1Route, p2Route]);
+    assert.deepEqual(p3Route, ['loc2', 'loc1']);
+
+    // Player 4: next least-used variation
+    const p4Route = routes.dealUniqueRoute(twoNodes, [p1Route, p2Route, p3Route]);
+    assert.deepEqual(p4Route, ['loc1', 'loc2']);
+  });
+
+  it('deals unique routes across all 6 variations for a 3-location hunt', () => {
+    const threeNodes = [
+      { id: 'l1', isTreasure: false },
+      { id: 'l2', isTreasure: false },
+      { id: 'l3', isTreasure: false },
+    ];
+
+    const assignedRoutes: string[][] = [];
+    const assignedKeys = new Set<string>();
+
+    for (let i = 0; i < 6; i++) {
+      const route = routes.dealUniqueRoute(threeNodes, assignedRoutes);
+      const key = route.join('->');
+      assert.equal(assignedKeys.has(key), false, `Route ${key} was already assigned!`);
+      assignedKeys.add(key);
+      assignedRoutes.push(route);
+    }
+
+    assert.equal(assignedKeys.size, 6);
+
+    // 7th player should cycle to one of the 6 variations
+    const p7Route = routes.dealUniqueRoute(threeNodes, assignedRoutes);
+    assert.equal(assignedKeys.has(p7Route.join('->')), true);
+  });
+
+  it('always places tagged treasure at the end while permuting walkable stops', () => {
+    const nodesWithTreasure = [
+      { id: 'w1', isTreasure: false },
+      { id: 'w2', isTreasure: false },
+      { id: 'treasure', isTreasure: true },
+    ];
+
+    const r1 = routes.dealUniqueRoute(nodesWithTreasure, []);
+    assert.deepEqual(r1, ['w2', 'w1', 'treasure']);
+
+    const r2 = routes.dealUniqueRoute(nodesWithTreasure, [r1]);
+    assert.deepEqual(r2, ['w1', 'w2', 'treasure']);
+  });
+});
+
 describe('validateReorder', () => {
   const CURRENT = ['a', 'b', 'c', 'd'];
 

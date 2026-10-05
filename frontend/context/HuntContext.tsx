@@ -412,7 +412,7 @@ export const HuntProvider: React.FC<{ children: React.ReactNode }> = ({ children
           // the share link), or a deal of the walkable locations for a hunt saved
           // before routes existed. Progress that already exists keeps the route
           // it joined with.
-          route: game.route?.length ? [...game.route] : buildRoute(game.characters),
+          route: buildRoute(game.characters),
           discoveredCharacterIds: [],
           ...(resolvedTeamName ? { teamName: resolvedTeamName } : {}),
           status: 'active',
