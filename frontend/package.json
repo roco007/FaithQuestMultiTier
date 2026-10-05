@@ -8,8 +8,9 @@
     "build": "next build",
     "start": "next start",
     "start:tunnel": "node scripts/start-tunnel.mjs",
-    "test": "npm run test:manifest && npm run test:route",
+    "test": "npm run test:manifest && npm run test:route && npm run test:join",
     "test:route": "npx --yes tsx scripts/route.test.ts",
+    "test:join": "npx --yes tsx scripts/join.test.ts",
     "test:manifest": "node scripts/manifest.test.mjs"
   },
   "dependencies": {

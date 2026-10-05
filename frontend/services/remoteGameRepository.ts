@@ -29,11 +29,16 @@ import { webStorage } from '../utils/webStorage';
  */
 const GUEST_TOKEN_PREFIX = '@faithquest:guest_token:';
 
-/** The stored token for `huntId`, or null when this device has never joined. */
 export async function readGuestToken(huntId: string): Promise<string | null> {
   if (!huntId) return null;
   try {
-    return await webStorage.getItem(`${GUEST_TOKEN_PREFIX}${huntId}`);
+    const direct = await webStorage.getItem(`${GUEST_TOKEN_PREFIX}${huntId}`);
+    if (direct) return direct;
+    const serverId = await serverIdFor(huntId);
+    if (serverId && serverId !== huntId) {
+      return await webStorage.getItem(`${GUEST_TOKEN_PREFIX}${serverId}`);
+    }
+    return null;
   } catch {
     // Private-mode Safari throws on every storage call; a guest who cannot be
     // remembered simply plays as a new visitor next time.
@@ -249,6 +254,27 @@ async function pushGame(game: HuntGame): Promise<{ dto: HuntDto; entry: SyncEntr
     let entry: SyncEntry;
 
     const known = existingId !== game.id ? await tryGetHunt(existingId) : await tryGetHunt(game.id);
+
+    // A hunt received as a share payload already exists on the server, and this
+    // device is not its author — it cannot create it, update it, or even read it
+    // (`GET /hunts/:id` is author-or-participant). Without this branch `known` is
+    // null for the structural reason above, never because the hunt is new, so the
+    // create below runs: the player's phone **mints its own duplicate hunt** and
+    // then joins *that* one in `shadowSync` (which trusts the sync map entry the
+    // create just wrote). The creator's report then shows no players at all —
+    // the exact symptom, and silently, with no error anywhere.
+    //
+    // It only bites signed-in players: an anonymous guest's create is refused
+    // with 401, so they fall through to `shadowSync`'s share-code branch and
+    // join correctly. On a personal phone you are normally signed in, which is
+    // why this read as "players from my phone never show up".
+    //
+    // Staying device-local is correct and is what `shadowSync` expects: it joins
+    // by `shareCode`, gets the server's own hunt back, and builds the id and
+    // character mapping from that response. So the round still reaches the
+    // creator's report — this only stops the phantom copy.
+    if (!known && game.shareCode) return null;
+
     if (known) {
       dto = await huntsApi.update(game.id === known.id ? known.id : existingId, toUpdateInput(game));
       entry = (await entryFor(game.id)) ?? { serverId: dto.id, chars: {} };
@@ -316,6 +342,52 @@ async function mirrorGame(
   // Keep the caller's in-memory object on the server's dealt order so the
   // progress it saves next (joinGame) pins the same route the server will expect.
   if (mapped.route) game.route = [...mapped.route];
+  if (mapped.shareCode) game.shareCode = mapped.shareCode;
+}
+
+/**
+ * Reorders this hunt's stops on the server.
+ *
+ * The local id space is translated through the sync map first: the caller only
+ * knows its own device-local character ids, while the endpoint addresses
+ * `HuntNode` ids. Because the endpoint moves *positions* and never recreates the
+ * rows, the `chars` mapping built at create/update time stays valid across a
+ * reorder — which is exactly what the old full-`stops`-resend path could not
+ * offer, since it churned every node id and forced the mapping to be rebuilt
+ * from position.
+ *
+ * Returns the server's canonical order (its stops in their new positions) so the
+ * caller can adopt the authoritative sequence, or `null` when the hunt is not
+ * server-backed or the server refused — the caller then keeps its local order
+ * and stays device-local, which is the repository's rule everywhere else.
+ */
+export async function reorderStopsRemotely(game: HuntGame): Promise<HuntDto | null> {
+  if (!isApiConfigured()) return null;
+  const entry = await entryFor(game.id);
+  if (!entry) return null; // Never synced — nothing to reorder server-side.
+
+  // Authored order, 1:n. Every local character must resolve to a mapped server
+  // stop id, or the list we would send is not a permutation of the hunt's stops
+  // and the server will (correctly) refuse it.
+  //
+  // `entry.chars` is read directly rather than through `toServerCharId`, which
+  // falls back to the local id: a fallback would send a device-local `char_…` to
+  // the API, and the resulting 422 would look like a server fault rather than an
+  // incomplete mapping.
+  const ordered = [...game.characters].sort((a, b) => a.order - b.order);
+  const nodeIds: string[] = [];
+  for (const character of ordered) {
+    const serverId = entry.chars[character.id];
+    if (!serverId) return null;
+    nodeIds.push(serverId);
+  }
+
+  try {
+    return await huntsApi.reorderStops(entry.serverId, nodeIds);
+  } catch (err) {
+    console.warn('[hunts] stop reorder skipped (staying device-local):', err);
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -373,7 +445,12 @@ async function shadowSync(progress: HuntProgress): Promise<void> {
     });
     // First join of a guest's life: the server issues the token, keep it.
     const serverId = entry?.serverId ?? joined.id;
-    if (joined.guestToken) await writeGuestToken(serverId, joined.guestToken);
+    if (joined.guestToken) {
+      await writeGuestToken(serverId, joined.guestToken);
+      if (progress.gameId && progress.gameId !== serverId) {
+        await writeGuestToken(progress.gameId, joined.guestToken);
+      }
+    }
 
     // A device playing from a payload has no id mapping yet, so build one now:
     // both sides list their stops in authored order 1:n, and order is the join
@@ -472,7 +549,17 @@ export const remoteGameRepository: GameRepository = {
         await localGameRepository.saveGame(mapped);
         return mapped;
       } catch {
-        // 404 (never synced / unknown) or unreachable — the cache decides.
+        // 404 (never synced / unknown) or unreachable — try shareCode if applicable.
+        if (/^[A-Za-z0-9]{6}$/.test(id.trim())) {
+          try {
+            const dto = await huntsApi.findByShareCode(id.trim());
+            const mapped = dtoToHuntGame(dto, dto.id, null);
+            await localGameRepository.saveGame(mapped);
+            return mapped;
+          } catch {
+            // Not found by share code either
+          }
+        }
       }
     }
     return localGameRepository.getGame(id);

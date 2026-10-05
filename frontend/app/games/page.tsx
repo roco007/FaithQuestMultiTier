@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { Gamepad2, Plus, LogIn, LogOut, Play, Trash2, Share2, MapPin, Link2, ShieldCheck, Users } from 'lucide-react';
+import { Gamepad2, Plus, LogIn, LogOut, Play, Trash2, Share2, MapPin, Link2, ShieldCheck, Users, Maximize2 } from 'lucide-react';
 import { useHunt } from '../../context/HuntContext';
 import { useGame } from '../../context/GameContext';
 import { useAuth } from '../../context/AuthContext';
@@ -14,8 +14,10 @@ import { JoinPreflight } from '../../components/JoinPreflight';
 import { KeyInHand } from '../../components/KeyInHand';
 import { Modal } from '../../components/Modal';
 import { ShareLink } from '../../components/ShareLink';
+import { HuntPlayersPanel } from '../../components/HuntPlayersPanel';
 import { TeamNameField } from '../../components/TeamNameField';
 import { useShortLink } from '../../hooks/useShortLink';
+import { useLocationPing } from '../../hooks/useLocationPing';
 import type { HuntGame } from '../../types/hunt';
 
 /**
@@ -35,6 +37,7 @@ export default function GamesPage() {
     isLoading,
     createGame,
     deleteGame,
+    getGame,
     joinGame,
     leaveGame,
   } = useHunt();
@@ -58,6 +61,17 @@ export default function GamesPage() {
    * game rather than its id keeps the sheet's link stable while it is open.
    */
   const [sharing, setSharing] = useState<HuntGame | null>(null);
+  /**
+   * Hunt whose player report is open, from a row's "Players" button.
+   *
+   * The creator's report was reachable only through the share sheet on the
+   * Creator screen — and only in the window right after publishing, because
+   * that sheet holds the report. A creator who came back to "Your hunts" later
+   * to check how a hunt they shared hours ago is going had no way in. Holding
+   * the hunt (not just its id) keeps the title in the dialog correct while the
+   * panel polls.
+   */
+  const [reporting, setReporting] = useState<HuntGame | null>(null);
   /**
    * Hunt carried by an incoming `#join=…` deep link. The player is asked before
    * anything is saved, so opening someone's link never silently replaces the
@@ -84,7 +98,7 @@ export default function GamesPage() {
 
   /** Consumes the invite fragment exactly once, on arrival. */
   useEffect(() => {
-    const readInvite = () => {
+    const readInvite = async () => {
       const raw = window.location.hash.startsWith('#join=')
         ? window.location.hash.slice('#join='.length)
         : '';
@@ -92,7 +106,15 @@ export default function GamesPage() {
       // Drop the payload from the address bar first: this effect must not fire
       // again (or re-prompt) if the component remounts later.
       window.history.replaceState(null, '', window.location.pathname + window.location.search);
-      const game = decodeGameShareCode(decodeURIComponent(raw));
+      const decoded = decodeURIComponent(raw).trim();
+      let game = decodeGameShareCode(decoded);
+      if (!game && /^[A-Za-z0-9]{6}$/.test(decoded)) {
+        try {
+          game = await getGame(decoded.toUpperCase());
+        } catch {
+          // not found
+        }
+      }
       if (game) {
         setInvited(game);
         setInviteStage('confirm');
@@ -100,18 +122,15 @@ export default function GamesPage() {
         setInviteError('This invite link is damaged or incomplete. Ask the creator to resend it.');
       }
     };
-    readInvite();
+    void readInvite();
     // The fragment can also arrive via the back/forward buttons.
     window.addEventListener('hashchange', readInvite);
     return () => window.removeEventListener('hashchange', readInvite);
-  }, []);
+  }, [getGame]);
 
   /** Adds the invited player to the hunt — only ever called after the player has
    *  confirmed, given the name their team plays under, *and* passed the
-   *  device-permission checklist (or chosen to skip it).
-   *  `invited` is an already-decoded game, so it is re-encoded through the same
-   *  path the paste box uses rather than re-encoding the URL-escaped fragment
-   *  (which would double-escape it and fail to decode). */
+   *  device-permission checklist (or chosen to skip it). */
   const acceptInvite = useCallback(async () => {
     if (!invited) return;
     const name = teamName.trim();
@@ -122,7 +141,8 @@ export default function GamesPage() {
     setJoining(true);
     setInviteError(null);
     try {
-      await joinGame(encodeGameShareCode(invited), name);
+      const joinPayload = invited.shareCode ?? encodeGameShareCode(invited);
+      await joinGame(joinPayload, name);
       setInvited(null);
       setInviteStage('confirm');
       setPlaying(true);
@@ -140,8 +160,22 @@ export default function GamesPage() {
     setInviteStage('confirm');
   }, []);
 
-  /** True when the invite is the hunt already in progress — no switch needed. */
-  const inviteIsActive = Boolean(invited && activeGame && invited.id === activeGame.id);
+  /**
+   * True when the invite is the hunt already in progress — no switch needed.
+   *
+   * Compared on `shareCode` when both sides carry one, because that is the only
+   * identity that means the same thing on two devices. The local `id` is the
+   * fallback for a hunt with no server identity at all, and it is also the only
+   * thing available for a payload that has just been re-keyed to a free local id
+   * (see `rekeyCollidingLocalId`) — where the ids differ but the hunt is the same.
+   */
+  const inviteIsActive = Boolean(
+    invited &&
+      activeGame &&
+      (invited.shareCode && activeGame.shareCode
+        ? invited.shareCode === activeGame.shareCode
+        : invited.id === activeGame.id)
+  );
 
   const { userLocation } = useGame();
   // Strict visibility: the hunt list never leaks how close the current target
@@ -170,12 +204,24 @@ export default function GamesPage() {
     try {
       await joinGame(value, name);
       setJoinInput('');
+      setPlaying(true);
     } catch (err) {
       setJoinError(err instanceof Error ? err.message : 'Could not join that hunt.');
     } finally {
       setJoining(false);
     }
   };
+
+  /**
+   * Ping location while an active round is in progress even if the player is
+   * looking at the hunt dashboard on the Games page rather than inside the AR
+   * screen. When `playing` is true, `HuntPlay` renders and runs its own ping.
+   */
+  useLocationPing({
+    huntId: !playing && activeGame ? activeGame.id : null,
+    location: userLocation,
+    isFinished: activeProgress?.status === 'completed',
+  });
 
   /**
    * Creating is the one hunt action that needs an account — joining does not —
@@ -389,6 +435,19 @@ export default function GamesPage() {
                   </p>
                 </div>
                 <div className="huntRowActions">
+                  {/* Who is playing this hunt. Author-only, and the server
+                      answers 403 for anyone else — the panel explains that
+                      rather than showing an empty table that would read as
+                      "nobody has joined". */}
+                  <button
+                    type="button"
+                    className="btnGhost"
+                    onClick={() => setReporting(game)}
+                    title="See who is playing this hunt"
+                  >
+                    <Users size={15} />
+                    Players
+                  </button>
                   <button
                     type="button"
                     className="btnGhost"
@@ -412,6 +471,46 @@ export default function GamesPage() {
           ))}
         </div>
       )}
+
+      {/* --- Who is playing --------------------------------------------------
+          The creator's report, opened from any row of "Your hunts".
+
+          The same `HuntPlayersPanel` the Creator screen shows after publishing,
+          brought here so checking on a hunt does not mean re-publishing it. It
+          polls itself and needs no manual refresh, and it handles every "there is
+          nothing to show" case in place — a hunt the server never accepted, a
+          403, no backend — so this dialog is only a frame around it. */}
+      <Modal
+        open={reporting !== null}
+        onClose={() => setReporting(null)}
+        title={reporting ? `Players — ${reporting.title}` : 'Players'}
+        icon={<Users size={18} />}
+        accentColor="var(--sky)"
+      >
+        {reporting && (
+          <>
+            <p className="shareLead">
+              Everyone who opened your link for this game, with how far each team has got.
+            </p>
+            {/* The dialog map is a strip; this opens the same hunt on its own
+                page, for a hunt whose teams are spread out and need the whole
+                screen — or a second monitor. `noopener` so the opened tab has no
+                handle on this window. */}
+            <div className="shareActions" style={{ marginBottom: 4 }}>
+              <a
+                className="btnGhost"
+                href={`/hunts/live-map?hunt=${encodeURIComponent(reporting.id)}`}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <Maximize2 size={16} />
+                Open full map in a new tab
+              </a>
+            </div>
+            <HuntPlayersPanel huntId={reporting.id} />
+          </>
+        )}
+      </Modal>
 
       {/* --- Share a hunt ---------------------------------------------------
           The same sheet the Creator's publish panel uses. A creator sharing

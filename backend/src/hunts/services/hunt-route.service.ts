@@ -17,6 +17,63 @@ export interface Dealable<T> {
   isTreasure: boolean;
 }
 
+/**
+ * Why a reorder request was refused, or null when it is a valid permutation.
+ *
+ * Returned rather than thrown so the check is a pure function of its inputs and
+ * can be unit-tested without a database; `HuntsService.reorderStops` turns a
+ * non-null result into the 422.
+ */
+export type ReorderRejection = 'DUPLICATE_ID' | 'UNKNOWN_ID' | 'COUNT_MISMATCH';
+
+/**
+ * Checks that `requestedIds` is an exact permutation of `currentIds`.
+ *
+ * This is the whole safety argument for the reorder endpoint, so it is
+ * deliberately strict rather than lenient:
+ *
+ * - **Exact permutation required.** Not "a prefix", not "a subset". A partial
+ *   list would either strand stops at their old positions (leaving duplicate
+ *   `sequence` values the unique index refuses) or silently renumber stops the
+ *   caller never mentioned — and a stop that moves without being named is
+ *   exactly the "moved a stop under a team's feet" outcome rule 2 forbids.
+ * - **Checked against this hunt's own stops.** An id from another hunt (or a
+ *   `QuestNode` id, or a guess) fails `UNKNOWN_ID`, so the endpoint can never
+ *   reorder one hunt using another hunt's stops.
+ * - **Duplicates rejected explicitly.** `[a, a, b]` would pass a naive
+ *   "same size, all known" check while leaving `b` out of the new order; naming
+ *   the fault is what lets the caller fix it.
+ *
+ * Order of checks is the order a caller most likely needs to hear about: a
+ * repeated id is a client bug, an unknown id is a stale id, and a short list is
+ * the common "I only sent the ones I moved" mistake.
+ */
+export function validateReorder(
+  currentIds: readonly string[],
+  requestedIds: readonly string[],
+): ReorderRejection | null {
+  const current = new Set(currentIds);
+
+  if (new Set(requestedIds).size !== requestedIds.length) return 'DUPLICATE_ID';
+
+  const unknown = requestedIds.filter(id => !current.has(id));
+  if (unknown.length > 0) return 'UNKNOWN_ID';
+
+  // With duplicates and unknown ids already excluded, equal length is enough to
+  // prove nothing was left out — but saying so explicitly keeps this correct if
+  // the checks above are ever reordered.
+  if (requestedIds.length !== current.size) return 'COUNT_MISMATCH';
+
+  return null;
+}
+
+/** Human-facing text for each rejection, thrown as a 422 by the service. */
+export const REORDER_REJECTION_MESSAGES: Record<ReorderRejection, string> = {
+  DUPLICATE_ID: 'The same stop is listed twice — send each stop exactly once.',
+  UNKNOWN_ID: 'That list names a stop this hunt does not have.',
+  COUNT_MISMATCH: 'Reordering must list every stop of the hunt, not just the ones moved.',
+};
+
 @Injectable()
 export class HuntRouteService {
   /** Freshly dealt order: walkable stops shuffled, treasure last. */

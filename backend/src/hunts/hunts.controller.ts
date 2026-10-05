@@ -10,8 +10,13 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { HuntsService } from './hunts.service.js';
-import { CreateHuntDto, FindHuntsQueryDto, UpdateHuntDto } from './dto/hunt.dto.js';
-import { DiscoverHuntStopDto, JoinHuntDto } from './dto/join-hunt.dto.js';
+import {
+  CreateHuntDto,
+  FindHuntsQueryDto,
+  ReorderHuntStopsDto,
+  UpdateHuntDto,
+} from './dto/hunt.dto.js';
+import { DiscoverHuntStopDto, JoinHuntDto, ReportLocationDto } from './dto/join-hunt.dto.js';
 import { CurrentUser, OptionalAuth, type RequestUser } from '../common/decorators/auth.decorators.js';
 import { PaginationQueryDto } from '../common/dto/pagination-query.dto.js';
 
@@ -61,6 +66,13 @@ export class HuntsController {
     return this.hunts.join(user, dto);
   }
 
+  @Get('by-code/:code')
+  @OptionalAuth()
+  @ApiOperation({ summary: 'Preview a published hunt by its 6-character share code (public)' })
+  findByShareCode(@Param('code') code: string) {
+    return this.hunts.findByShareCode(code);
+  }
+
   @Get(':huntId')
   @ApiOperation({ summary: 'One hunt with its stops (author or participant only)' })
   findOne(@CurrentUser() user: RequestUser, @Param('huntId') huntId: string) {
@@ -75,6 +87,30 @@ export class HuntsController {
     @Body() dto: UpdateHuntDto,
   ) {
     return this.hunts.update(user.id, huntId, dto);
+  }
+
+  /**
+   * `PATCH /hunts/:huntId/stops/order` — reorder the hunt's stops.
+   *
+   * Declared before `:huntId`'s sibling routes, matching this controller's
+   * convention of listing literal paths first. (`:huntId` would not actually
+   * swallow it — the pattern is one segment and this path is four — but keeping
+   * the literal-first rule means nobody has to re-derive that.)
+   *
+   * Author-only, and the body must be an exact permutation of this hunt's own
+   * stop ids; anything else is a 422 before a single row is touched.
+   */
+  @Patch(':huntId/stops/order')
+  @ApiOperation({
+    summary:
+      'Reorder a hunt’s stops (author only). Body: every HuntNode id in the new order.',
+  })
+  reorderStops(
+    @CurrentUser() user: RequestUser,
+    @Param('huntId') huntId: string,
+    @Body() dto: ReorderHuntStopsDto,
+  ) {
+    return this.hunts.reorderStops(user.id, huntId, dto);
   }
 
   @Delete(':huntId')
@@ -114,6 +150,19 @@ export class HuntsController {
     @Query('guestToken') guestToken?: string,
   ) {
     return this.hunts.getProgress(user, huntId, guestToken);
+  }
+
+  @Post(':huntId/location')
+  @OptionalAuth()
+  @ApiOperation({
+    summary: 'Report your current position so the hunt creator can see it',
+  })
+  reportLocation(
+    @CurrentUser() user: RequestUser | undefined,
+    @Param('huntId') huntId: string,
+    @Body() dto: ReportLocationDto,
+  ) {
+    return this.hunts.reportLocation(user, huntId, dto);
   }
 
   @Post(':huntId/discover')

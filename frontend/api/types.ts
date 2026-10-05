@@ -271,6 +271,18 @@ export interface HuntPlayerDto {
   currentStopName: string | null;
   currentRoutePosition: number | null;
 
+  /**
+   * Last reported position, all three null when there is nothing to show.
+   *
+   * Null covers three cases the creator must not read as one: the player never
+   * consented to share, they consented but have not pinged yet, or the fix has
+   * gone stale. `locationAt` is the server's timestamp, so the map can grey out
+   * an old fix instead of presenting a parked player as if they were live.
+   */
+  latitude: number | null;
+  longitude: number | null;
+  locationAt: string | null;
+
   checkpoints: HuntCheckpointDto[];
 }
 

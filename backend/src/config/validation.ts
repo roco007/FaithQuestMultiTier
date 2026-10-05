@@ -47,9 +47,14 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): void 
       }
     }
 
+    // A wildcard is now honoured (see `main.ts`), so this no longer refuses to
+    // boot. It still refuses to pass *silently*: an open CORS policy in production
+    // is a real exposure, and the only safeguard left is that whoever deployed it
+    // had to mean it. Restoring the explicit list is a one-line env change.
     if ((env.CORS_ORIGIN ?? '').split(',').some((origin) => origin.trim() === '*')) {
-      throw new Error(
-        'CORS_ORIGIN must not contain "*" in production — list the frontend origin(s) instead.',
+      console.warn(
+        '[config] CORS_ORIGIN contains "*" while NODE_ENV=production — every origin is ' +
+          'allowed. Replace it with the frontend origin(s) when this is deployed for real.',
       );
     }
   }

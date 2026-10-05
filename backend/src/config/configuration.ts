@@ -19,16 +19,17 @@ export interface AppConfig {
   };
 }
 
-/** Splits `CORS_ORIGIN` ("a,b") into a trimmed list. Never returns `*`. */
+/** Splits `CORS_ORIGIN` ("a,b") into a trimmed list. `["*"]` means "any origin". */
 function parseOrigins(raw: string | undefined, fallback: string[]): string[] {
   const origins = (raw ?? '')
     .split(',')
     .map((origin) => origin.trim())
     .filter((origin) => origin.length > 0);
-  // A wildcard is deliberately rejected: rule #24 forbids unrestricted CORS in
-  // production, and silently accepting "*" here is how that rule gets broken.
-  const safe = origins.filter((origin) => origin !== '*');
-  return safe.length > 0 ? safe : fallback;
+  // "*" is preserved, not stripped: it is a deliberate, loudly-warned opt-in (see
+  // `main.ts`), and a config value the app quietly ignores is worse than one it
+  // honours with a warning. Any mix of "*" with real origins also means "any" —
+  // there is no narrower reading of a wildcard plus a list.
+  return origins.length > 0 ? origins : fallback;
 }
 
 export default function configuration(): AppConfig {

@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { HuntGateService } from './hunt-gate.service.js';
-import { HuntRouteService } from './hunt-route.service.js';
+import { HuntRouteService, validateReorder } from './hunt-route.service.js';
 
 const gate = new HuntGateService();
 
@@ -126,5 +126,96 @@ describe('HuntRouteService.resolve', () => {
     const fromPublished = routes.resolve(nodes, [], ['b', 'a', 'c']);
     assert.equal(fromPublished.length, 3);
     assert.equal(fromPublished[fromPublished.length - 1]?.id, 'c');
+  });
+});
+
+describe('validateReorder', () => {
+  const CURRENT = ['a', 'b', 'c', 'd'];
+
+  it('accepts any permutation of the hunt’s own stops', () => {
+    assert.equal(validateReorder(CURRENT, ['a', 'b', 'c', 'd']), null);
+    assert.equal(validateReorder(CURRENT, ['d', 'c', 'b', 'a']), null); // full reverse
+    assert.equal(validateReorder(CURRENT, ['b', 'a', 'd', 'c']), null); // two swaps
+    // A rotation: the exact shape the creator's "move earlier"/"move later"
+    // buttons produce, and the one a naive unique-index write would trip on.
+    assert.equal(validateReorder(CURRENT, ['b', 'c', 'd', 'a']), null);
+  });
+
+  it('accepts a single adjacent swap unchanged', () => {
+    // Pressing an arrow at the end of the list is often a no-op; the client may
+    // still send it, and re-sending the current order must not be an error.
+    assert.equal(validateReorder(['a', 'b'], ['a', 'b']), null);
+  });
+
+  it('rejects a repeated stop', () => {
+    // [a, a, b, d] has the right length and only known ids, so a naive
+    // "same size + all known" check would pass it — while quietly dropping c.
+    assert.equal(validateReorder(CURRENT, ['a', 'a', 'b', 'd']), 'DUPLICATE_ID');
+    assert.equal(validateReorder(CURRENT, ['a', 'a', 'a', 'a']), 'DUPLICATE_ID');
+  });
+
+  it('rejects a stop from another hunt', () => {
+    assert.equal(validateReorder(CURRENT, ['a', 'b', 'c', 'zz']), 'UNKNOWN_ID');
+    assert.equal(validateReorder(CURRENT, ['a', 'b', 'c', 'd', 'e']), 'UNKNOWN_ID');
+  });
+
+  it('rejects a partial list — the “I only sent the ones I moved” mistake', () => {
+    // Accepting this would strand the unlisted stops at their old positions,
+    // leaving duplicate `sequence` values for `@@unique([huntId, sequence])`,
+    // or renumbering stops the caller never mentioned.
+    assert.equal(validateReorder(CURRENT, ['b', 'a']), 'COUNT_MISMATCH');
+    assert.equal(validateReorder(CURRENT, ['a', 'b', 'c']), 'COUNT_MISMATCH');
+    assert.equal(validateReorder(CURRENT, []), 'COUNT_MISMATCH');
+  });
+
+  it('rejects a list longer than the hunt even when every id is known twice', () => {
+    assert.equal(validateReorder(['a', 'b'], ['a', 'b', 'a', 'b']), 'DUPLICATE_ID');
+  });
+
+  it('reports the same verdict for a hunt with a single stop', () => {
+    assert.equal(validateReorder(['only'], ['only']), null);
+    assert.equal(validateReorder(['only'], []), 'COUNT_MISMATCH');
+    assert.equal(validateReorder(['only'], ['other']), 'UNKNOWN_ID');
+  });
+});
+
+describe('two-phase reorder write', () => {
+  /**
+   * Mirrors the parking strategy in `HuntsService.reorderStops`, and asserts the
+   * invariant that makes it necessary: `HuntNode` carries
+   * `@@unique([huntId, sequence])`, so writing the final positions one row at a
+   * time collides on any swap unless every row is first moved out of range.
+   */
+  it('never reuses a live sequence at any point in a rotation', () => {
+    const before = { a: 1, b: 2, c: 3, d: 4 };
+    const wanted = ['b', 'c', 'd', 'a'];
+    const rows = new Map(Object.entries(before));
+
+    const collides = () => new Set(rows.values()).size !== rows.size;
+
+    // A direct write does collide — this is the bug the two phases exist for.
+    const naive = new Map(rows);
+    let collided = false;
+    for (const [index, id] of wanted.entries()) {
+      naive.set(id, index + 1);
+      if (new Set(naive.values()).size !== naive.size) collided = true;
+    }
+    assert.equal(collided, true, 'a direct write is expected to violate the unique index');
+
+    // Phase 1: park every row at a distinct negative. Safe in any order.
+    let index = 0;
+    for (const id of rows.keys()) rows.set(id, -(index++ + 1));
+    assert.equal(collides(), false);
+
+    // Phase 2: claim the final 1..n. Safe because every live value is negative.
+    for (const [i, id] of wanted.entries()) rows.set(id, i + 1);
+    assert.equal(collides(), false);
+
+    // …and the end state is the requested order, with no negative residue.
+    assert.deepEqual(
+      [...rows.entries()].sort((x, y) => x[1] - y[1]).map(([id]) => id),
+      wanted,
+    );
+    assert.equal([...rows.values()].every((v) => v >= 1), true);
   });
 });

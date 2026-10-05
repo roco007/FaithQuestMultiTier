@@ -24,9 +24,11 @@ export interface UseHuntPlayers {
  *
  * Refreshes on a timer because the report's whole point is "who is playing
  * *right now*", and a figure that only updates on manual reload stops being
- * live within seconds. Polling is deliberately modest (every 15s, and only
- * while the tab is visible) because the endpoint exposes other people's rounds
- * and there is no reason to hammer it.
+ * live within seconds. The cadence is 3 s, matching the interval players report
+ * their position on (`LOCATION_PING_INTERVAL_MS`), so the map is never holding a
+ * fix older than one the players themselves could have sent. Polling pauses
+ * while the tab is hidden: this endpoint exposes other people's rounds, and
+ * there is no reason to spend that on a background tab.
  *
  * Never throws: a failed read renders an explanation instead of an empty table,
  * so "nobody has played yet" and "we could not ask" can never look alike.
@@ -65,11 +67,19 @@ export function useHuntPlayers(huntId: string | null): UseHuntPlayers {
         const serverId = await serverIdFor(huntId);
         if (cancelled) return;
 
-        // No mapping means this hunt was never accepted by the server, so the
-        // report genuinely does not exist. Saying that plainly beats a bare 404:
-        // a creator who placed a location the catalogue does not have would
-        // otherwise just see "not found" and assume the players are missing.
-        if (serverId === huntId) {
+        // An id that is already a UUID was never a device-local id, so it needs
+        // no crossover and is certainly known to the server. This check used to
+        // assume the opposite — that "no mapping" always means "never synced" —
+        // which was wrong in two real cases: a hunt created on another device
+        // (its local id *is* its server UUID), and a server-born hunt opened
+        // directly at `/hunts/live-map?hunt=<uuid>`. Both were told the game was
+        // device-only and showed no players at all.
+        //
+        // A numeric local id with no mapping is the genuine device-only case, so
+        // that is the only shape still short-circuited here; anything else is
+        // asked for and lets the response decide.
+        const looksDeviceLocal = /^\d+$/.test(huntId);
+        if (looksDeviceLocal && serverId === huntId) {
           setData(null);
           setError(
             'This game is saved on this device only — the server rejected it, so there is no ' +
@@ -110,8 +120,8 @@ export function useHuntPlayers(huntId: string | null): UseHuntPlayers {
   return { data, isLoading, error, hasHunt: Boolean(huntId), page, setPage, reload };
 }
 
-/** How often the report refreshes itself. */
-const POLL_INTERVAL_MS = 15_000;
+/** How often the report refreshes itself — see `LOCATION_PING_INTERVAL_MS`. */
+const POLL_INTERVAL_MS = 3_000;
 
 /**
  * Turns a failure into something a creator can act on.

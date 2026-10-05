@@ -3,7 +3,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { ArrowLeft, Radar, MapPin, Compass, Lock, PartyPopper, Camera } from 'lucide-react';
 import { useHunt, DiscoverResult } from '../context/HuntContext';
+import { useGame } from '../context/GameContext';
 import { useHuntRadar } from '../hooks/useHuntRadar';
+import { useLocationPing } from '../hooks/useLocationPing';
 import { formatDistance } from '../utils/geo';
 import { characterMetAt } from '../utils/huntRoute';
 import { loadCharacterAssets } from '../services/characterAssets';
@@ -64,7 +66,18 @@ interface HuntPlayProps {
  */
 export function HuntPlay({ onExit }: HuntPlayProps) {
   const { activeGame, activeProgress, activeRoute, currentCharacter, metCharacter } = useHunt();
+  const { userLocation } = useGame();
   const radar = useHuntRadar();
+
+  // Report this player's position every 3 s so the hunt's creator can watch the
+  // round on their map. Mounted here rather than in a child so it survives the
+  // AR camera taking over the screen, and declared above the early return below
+  // so the ping loop runs in every state — including the moment a hunt ends.
+  useLocationPing({
+    huntId: activeGame?.id ?? null,
+    location: userLocation,
+    isFinished: activeProgress?.status === 'completed',
+  });
 
   const [celebration, setCelebration] = useState(false);
   /** Whether the fullscreen AR camera view is open. */

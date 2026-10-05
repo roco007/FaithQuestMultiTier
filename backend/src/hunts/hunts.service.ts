@@ -1,7 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { ApiException } from '../common/exceptions/api.exception.js';
-import { HuntRouteService } from './services/hunt-route.service.js';
+import {
+  HuntRouteService,
+  REORDER_REJECTION_MESSAGES,
+  validateReorder,
+} from './services/hunt-route.service.js';
 import { HuntGateService } from './services/hunt-gate.service.js';
 import {
   ACTIVE_WINDOW_MINUTES,
@@ -19,9 +23,10 @@ import {
 import type {
   CreateHuntDto,
   FindHuntsQueryDto,
+  ReorderHuntStopsDto,
   UpdateHuntDto,
 } from './dto/hunt.dto.js';
-import type { DiscoverHuntStopDto, JoinHuntDto } from './dto/join-hunt.dto.js';
+import type { DiscoverHuntStopDto, JoinHuntDto, ReportLocationDto } from './dto/join-hunt.dto.js';
 import type { Paginated, PaginationQueryDto } from '../common/dto/pagination-query.dto.js';
 import type { RequestUser } from '../common/decorators/auth.decorators.js';
 import { Prisma } from '../generated/prisma/client.js';
@@ -201,6 +206,88 @@ export class HuntsService {
     });
 
     return toHuntDto(updated);
+  }
+
+  /**
+   * `PATCH /hunts/:huntId/stops/order` — the author reorders their own stops.
+   *
+   * This is the server *deciding* an order rather than mirroring one. Previously
+   * the only way to move a stop was to resend the whole `stops` list via
+   * `update()`, which `deleteMany`s every `HuntNode` and recreates the lot — so
+   * a reorder also churned every stop id, discarded the hunt's dealt route, and
+   * wiped each participant's pinned route and progress. That is a very large
+   * blast radius for "swap stops 2 and 3", and it is why the client had to map
+   * ids **positionally** (`remoteGameRepository.ts`): stop ids were never stable,
+   * so position was the only correspondence available.
+   *
+   * Here the stops are the *same rows* — only `sequence` moves — so ids stay
+   * stable and the client's id mapping survives a reorder untouched.
+   *
+   * Two deliberate behaviours:
+   *
+   * 1. **A published hunt keeps its dealt route.** Reordering is an *authoring*
+   *    change to the stop list, not a re-publish. Rule 2 (see `resolve`) exists
+   *    so a creator editing mid-hunt cannot move the stops a team is walking —
+   *    discarding `Hunt.route` here would break the promise that the share link
+   *    a player already holds still describes the hunt they joined. The next
+   *    explicit `publish` deals a fresh route from the new order.
+   * 2. **Participants are never touched.** Their pinned `route` and
+   *    `discoveredNodeIds` reference node ids, which this endpoint does not
+   *    change, so a live round keeps both its order and its progress.
+   *
+   * The write is **two-phase** because `HuntNode` carries
+   * `@@unique([huntId, sequence])`. Writing the new positions directly would
+   * collide the instant two stops swap: moving `a` from 1→2 while `b` still sits
+   * at 2 is a duplicate the index refuses. So every stop is first parked at a
+   * negative sequence (impossible under the 1..n invariant, so it can never
+   * collide), and only then given its final position.
+   */
+  async reorderStops(
+    userId: string,
+    huntId: string,
+    dto: ReorderHuntStopsDto,
+  ): Promise<HuntDto> {
+    const hunt = await this.findEntityOrFail(huntId);
+    this.assertOwner(hunt.creatorId, userId);
+
+    const requested = dto.nodeIds.map(id => id.trim()).filter(id => id.length > 0);
+    const currentIds = hunt.nodes.map(node => node.id);
+
+    const rejection = validateReorder(currentIds, requested);
+    if (rejection) {
+      throw ApiException.businessRule('VALIDATION_ERROR', REORDER_REJECTION_MESSAGES[rejection]);
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      // Phase 1 — park every stop outside the 1..n range. Negatives cannot
+      // collide with a live position, so this phase is safe in any order. The
+      // exact value does not matter, only that all are distinct and negative.
+      for (const [index, node] of hunt.nodes.entries()) {
+        await tx.huntNode.update({
+          where: { id: node.id },
+          data: { sequence: -(index + 1) },
+        });
+      }
+
+      // Phase 2 — every stop now sits at a unique negative, so any target
+      // 1..n is free by the time its owner claims it.
+      for (const [index, nodeId] of requested.entries()) {
+        await tx.huntNode.update({
+          where: { id: nodeId },
+          data: { sequence: index + 1 },
+        });
+      }
+
+      // Touch the hunt so `updatedAt` moves — the creator list sorts by it, and
+      // a reorder that does not surface there looks like the press did nothing.
+      await tx.hunt.update({ where: { id: huntId }, data: { updatedAt: new Date() } });
+    });
+
+    // Re-read rather than mutating the `hunt` we already hold: `toHuntDto`
+    // sorts `characters` by `sequence`, so the caller gets the order the database
+    // actually holds, not the order that was merely requested.
+    const reordered = await this.findEntityOrFail(huntId);
+    return toHuntDto(reordered);
   }
 
   /** `DELETE /hunts/:huntId` — author-only; stops and participants cascade. */
@@ -389,6 +476,56 @@ export class HuntsService {
   }
 
   /**
+   * `POST /hunts/:huntId/location` — record this player's current position.
+   *
+   * Written as a single overwritten slot (`latitude` / `longitude` /
+   * `locationAt`) rather than an append, so the database never holds a trail of
+   * where somebody walked. A creator asking "where is each team right now" does
+   * not need, and cannot get, the path they took to get there.
+   *
+   * `locationAt` is the **server's** clock. A client-supplied timestamp would let
+   * a player backdate a fix to look live hours later, or forward-date one to look
+   * fresh — and the creator's map reads staleness off exactly this value.
+   *
+   * Reported unconditionally while a round is in progress: every player is on the
+   * creator's map, and there is no per-player flag to disagree with the
+   * coordinates stored beside it.
+   */
+  async reportLocation(
+    user: RequestUser | undefined,
+    huntId: string,
+    dto: ReportLocationDto,
+  ): Promise<HuntProgressDto> {
+    const hunt = await this.findEntityOrFail(huntId);
+    if (hunt.status === 'DRAFT' || hunt.status === 'ARCHIVED') {
+      throw ApiException.businessRule(
+        'HUNT_NOT_PUBLISHED',
+        'This hunt has not been published yet.',
+      );
+    }
+
+    const participant = await this.resolveParticipant(hunt.id, user, dto.guestToken);
+    if (!participant) {
+      throw ApiException.forbidden(
+        'HUNT_NOT_JOINED',
+        'Join this hunt before reporting your location.',
+      );
+    }
+
+    const updated = await this.prisma.huntParticipant.update({
+      where: { id: participant.id },
+      data: {
+        latitude: dto.latitude,
+        longitude: dto.longitude,
+        locationAt: new Date(),
+        lastSeenAt: new Date(),
+      },
+    });
+
+    return toHuntProgressDto(updated, hunt.id);
+  }
+
+  /**
    * Finds the participant row addressed by this request.
    *
    * A session wins over a guest token, always. That ordering is the security
@@ -441,9 +578,9 @@ export class HuntsService {
     } satisfies Prisma.HuntParticipantInclude;
 
     const [total, players, completed, active, recent] = await Promise.all([
-      this.prisma.huntParticipant.count({ where: { huntId } }),
+      this.prisma.huntParticipant.count({ where: { huntId: hunt.id } }),
       this.prisma.huntParticipant.findMany({
-        where: { huntId },
+        where: { huntId: hunt.id },
         include,
         // Newest joiner first, then by name — a stable, human order rather than
         // an arbitrary one that would reshuffle between pages.
@@ -451,13 +588,13 @@ export class HuntsService {
         skip: query.skip,
         take: query.limit,
       }),
-      this.prisma.huntParticipant.count({ where: { huntId, completed: true } }),
+      this.prisma.huntParticipant.count({ where: { huntId: hunt.id, completed: true } }),
       // Two cheap counts stand in for a scan of every row: the heartbeat window
       // is the only thing that decides "playing now".
-      this.prisma.huntParticipant.count({ where: { huntId, completed: false } }),
+      this.prisma.huntParticipant.count({ where: { huntId: hunt.id, completed: false } }),
       this.prisma.huntParticipant.count({
         where: {
-          huntId,
+          huntId: hunt.id,
           completed: false,
           lastSeenAt: { gte: new Date(now.getTime() - ACTIVE_WINDOW_MINUTES * 60 * 1000) },
         },
@@ -806,12 +943,31 @@ export class HuntsService {
     );
   }
 
-  /** Shared lookup used by every method above. */
-  private async findEntityOrFail(huntId: string) {
+  /** Preview a published hunt by its 6-character share code (public/unauthenticated). */
+  async findByShareCode(code: string): Promise<HuntDto> {
     const hunt = await this.prisma.hunt.findUnique({
-      where: { id: huntId },
+      where: { shareCode: code.trim().toUpperCase() },
       include: HUNT_INCLUDE,
     });
+    if (!hunt || (hunt.status !== 'PUBLISHED' && hunt.status !== 'ACTIVE')) {
+      throw ApiException.notFound('NOT_FOUND', 'No published hunt matches that code.');
+    }
+    return toHuntDto(hunt);
+  }
+
+  /** Shared lookup used by every method above. */
+  private async findEntityOrFail(huntId: string) {
+    const trimmed = huntId.trim();
+    const isShareCode = /^[A-Za-z0-9]{6}$/.test(trimmed);
+    const hunt = isShareCode
+      ? await this.prisma.hunt.findUnique({
+          where: { shareCode: trimmed.toUpperCase() },
+          include: HUNT_INCLUDE,
+        })
+      : await this.prisma.hunt.findUnique({
+          where: { id: trimmed },
+          include: HUNT_INCLUDE,
+        });
     if (!hunt) {
       throw ApiException.notFound('NOT_FOUND', 'That hunt does not exist.');
     }

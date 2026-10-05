@@ -74,6 +74,27 @@ export function formatDuration(ms: number | null | undefined): string {
 }
 
 /**
+ * Renders how long ago something happened, as `just now` or `4m 20s ago`.
+ *
+ * The live map and the report both have to answer "is this current?", and a
+ * bare "stale" cannot: a fix 10 s old and one from this morning are the same
+ * word. The elapsed time is what makes the greying legible, so it is shown next
+ * to it rather than left for the reader to infer.
+ *
+ * A timestamp in the future is rendered as `just now` rather than as a negative
+ * duration: clock skew between a player's phone and the server's clock is
+ * routine, and `-3s ago` is a bug report, not information.
+ */
+export function formatAgo(iso: string | null | undefined, now: number = Date.now()): string {
+  if (!iso) return '—';
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return '—';
+  const elapsed = now - then;
+  if (elapsed < 5_000) return 'just now';
+  return `${formatDuration(elapsed)} ago`;
+}
+
+/**
  * The gap between two consecutive checkpoints — "how long this stop took",
  * which is the number a creator actually compares between players.
  *
