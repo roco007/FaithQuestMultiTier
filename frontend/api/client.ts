@@ -22,6 +22,11 @@ export const API_PREFIX = '/api/v1';
  * Next.js can inline it at build time.
  */
 export function getApiBaseUrl(): string {
+  // When proxying to a local backend, return '' so browser calls go same-origin
+  // through the Next.js proxy to localhost:3001 (crucial for phone/LAN testing).
+  if (process.env.API_PROXY_TARGET && /localhost|127\.0\.0\.1/.test(process.env.API_PROXY_TARGET)) {
+    return '';
+  }
   const raw = process.env.NEXT_PUBLIC_API_URL;
   if (!raw) return '';
   return raw.replace(/\/+$/, '');
@@ -55,10 +60,14 @@ export function isApiConfigured(): boolean {
  * Server-only by construction: `API_PROXY_TARGET` carries no `NEXT_PUBLIC_`
  * prefix, so it is absent from the browser bundle entirely.
  */
-export function getServerApiBaseUrl(): string | null {
-  const target = process.env.API_PROXY_TARGET ?? process.env.NEXT_PUBLIC_API_URL;
-  return target ? target.replace(/\/+$/, '') : null;
+export function getServerApiBaseUrl(): string {
+  const target =
+    process.env.API_PROXY_TARGET ??
+    process.env.NEXT_PUBLIC_API_URL ??
+    'https://faithquestmultitier.onrender.com';
+  return target.replace(/\/+$/, '');
 }
+
 
 /** Any non-2xx response, carrying the backend's error-envelope code. */
 export class ApiError extends Error {

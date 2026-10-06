@@ -315,4 +315,12 @@ export interface ShortLinkDto {
   target: string;
 }
 
+/** `GET /health` or `GET /api/v1/health` response. */
+export interface HealthResponse {
+  status: string;
+  database?: string;
+  [key: string]: unknown;
+}
+
+
 

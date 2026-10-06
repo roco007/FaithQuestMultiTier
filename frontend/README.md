@@ -726,3 +726,12 @@ the website restriction to `*` while testing and restore it afterwards.
   `navigator.userActivation` (falling back to a first-interaction listener).
   Without this the app logs a console error and buzzes on page load.
 - Built and tested with Node 20+.
+
+## Running the app locally
+npm run dev:local: Runs against http://localhost:3001
+npm run dev:render: Runs against https://faithquestmultitier.onrender.com
+npm run dev: Uses the target specified in .env.local
+
+## Run the app on LAN
+
+npm run dev:lan: Runs against your LAN IP (e.g. http://[IP_ADDRESS])

@@ -4,6 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "dev:local": "API_PROXY_TARGET=http://localhost:3001 next dev",
+    "dev:render": "API_PROXY_TARGET=https://faithquestmultitier.onrender.com next dev",
     "dev:tunnel": "node scripts/dev-tunnel.mjs",
     "build": "next build",
     "start": "next start",

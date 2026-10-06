@@ -10,7 +10,7 @@ RUN npm ci
 
 # NEXT_PUBLIC_* vars are inlined at build time — this must be supplied when the
 # image is built, not when it runs (`--build-arg` / compose `args:`).
-ARG NEXT_PUBLIC_API_URL=http://localhost:3001
+ARG NEXT_PUBLIC_API_URL=https://faithquestmultitier.onrender.com
 ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
 
 COPY . ./
