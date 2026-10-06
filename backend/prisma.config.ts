@@ -1,5 +1,5 @@
 import 'dotenv/config'; // Prisma 7 no longer loads .env automatically (see prisma-upgrade-v7/env-variables).
-import { defineConfig, env } from 'prisma/config';
+import { defineConfig } from 'prisma/config';
 
 /**
  * Prisma 7 configuration.
@@ -16,6 +16,6 @@ export default defineConfig({
     seed: 'tsx prisma/seed.ts',
   },
   datasource: {
-    url: env('DATABASE_URL'),
+    url: process.env.DATABASE_URL,
   },
 });
