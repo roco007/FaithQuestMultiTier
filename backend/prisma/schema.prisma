@@ -26,8 +26,9 @@
 generator client {
   // `prisma-client` defaults to ESM, which is what the backend needs: NestJS 12
   // ships ESM-only packages, so the compiled output is ESM end to end.
-  provider = "prisma-client"
-  output   = "../src/generated/prisma"
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  importFileExtension = "js"
 }
 
 datasource db {

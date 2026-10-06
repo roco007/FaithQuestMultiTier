@@ -9,13 +9,12 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 
-# Prisma schema + migrations must be present before `generate`, and the client
-# must exist before `nest build` compiles `src/generated/prisma`.
+# Copy configs and Prisma schema before client generation
+COPY nest-cli.json tsconfig.json tsconfig.build.json ./
 COPY prisma ./prisma
 COPY prisma.config.ts ./
 RUN npx prisma generate
 
-COPY nest-cli.json tsconfig.json tsconfig.build.json ./
 COPY src ./src
 RUN npm run build
 
@@ -28,7 +27,7 @@ ENV NODE_ENV=production
 # needed at runtime (not just a devDependency for the builder).
 COPY package.json package-lock.json prisma.config.ts ./
 COPY prisma ./prisma
-RUN npm ci --omit=dev && npx prisma generate && npm cache clean --force
+RUN npm ci --omit=dev && npm cache clean --force
 
 COPY --from=builder /app/dist ./dist
 
