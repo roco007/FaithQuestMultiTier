@@ -26,8 +26,9 @@
 generator client {
   // `prisma-client` defaults to ESM, which is what the backend needs: NestJS 12
   // ships ESM-only packages, so the compiled output is ESM end to end.
-  provider = "prisma-client"
-  output   = "../src/generated/prisma"
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  importFileExtension = "js"
 }
 
 datasource db {
@@ -299,6 +300,18 @@ model HuntParticipant {
   /// Last heartbeat (join or stop clear). Drives the creator dashboard's
   /// "playing now" column: a row seen within ACTIVE_WINDOW_MINUTES is live.
   lastSeenAt        DateTime?
+  /// This player's **last known** position, overwritten on every ping.
+  ///
+  /// Deliberately a single mutable slot rather than a trail of fixes: the
+  /// creator's map needs "where is each team right now", and a history would
+  /// store far more about a player's movements than that purpose requires — so
+  /// there is nothing to leak, subpoena or scroll back through. Nullable only
+  /// because it is absent until the first ping of a round.
+  latitude          Float?
+  longitude         Float?
+  /// Server clock of the ping above — the *server's* time, never a
+  /// client-supplied one, so "this fix is 4 s old" cannot be forged.
+  locationAt        DateTime?
 
   hunt         Hunt                  @relation(fields: [huntId], references: [id], onDelete: Cascade)
   user         User?                 @relation(fields: [userId], references: [id], onDelete: Cascade)

@@ -35,19 +35,26 @@ async function bootstrap(): Promise<void> {
   // One error envelope for every failure (rule #9).
   app.useGlobalFilters(new AllExceptionsFilter());
 
-  // Rule #24: an explicit origin list, never "*". With `credentials: true`
-  // the server must echo one concrete origin — "*" or a bare `true` makes
-  // browsers reject the response ("must not be the wildcard ... when the
-  // request's credentials mode is 'include'"). Unknown origins simply get no
-  // CORS headers, so the browser blocks them.
+  // An explicit origin list by default. With `credentials: true` the server must
+  // echo one concrete origin — a literal "*" makes browsers reject the response
+  // ("must not be the wildcard ... when the request's credentials mode is
+  // 'include'"). Unknown origins simply get no CORS headers, so the browser
+  // blocks them.
   const origins = config.get<string[]>('corsOrigins') ?? [];
+  const allowAnyOrigin = origins.includes('*');
+
   app.enableCors({
     origin: ((
       origin: string | undefined,
-      callback: (err: Error | null, allowed?: boolean) => void,
+      callback: (err: Error | null, allowed?: boolean | string) => void,
     ) => {
       // Same-origin / curl / mobile clients send no Origin — always allow.
       if (!origin) return callback(null, true);
+      // The wildcard case has to *reflect* the caller's origin rather than send
+      // "*" back: credentials mode is "include" (see below), and browsers reject a
+      // wildcard Access-Control-Allow-Origin in that mode. Echoing the exact
+      // origin is what makes an open policy actually work.
+      if (allowAnyOrigin) return callback(null, origin);
       callback(null, origins.includes(origin));
     }) as never,
     credentials: true,
@@ -83,7 +90,17 @@ async function bootstrap(): Promise<void> {
   if (config.get<string>('nodeEnv') !== 'production') {
     logger.log(`Swagger UI: http://localhost:${port}/${SWAGGER_PATH}`);
   }
-  logger.log(`CORS origins: ${origins.join(', ') || '(reflecting request origin)'}`);
+  if (allowAnyOrigin) {
+    // An open CORS policy is easy to leave behind and hard to notice, so it is
+    // announced on every boot rather than buried in a config comment. Note the
+    // asymmetry with cookies: this app authenticates with a Bearer token in the
+    // Authorization header, which a browser will not attach to a request made on
+    // another site's behalf — so "*" does not by itself hand over a session.
+    logger.warn(
+      'CORS: allowing ALL origins (CORS_ORIGIN contains "*"). Any site can call this API.',
+    );
+  }
+  logger.log(`CORS origins: ${origins.join(', ')}`);
 }
 
 void bootstrap();

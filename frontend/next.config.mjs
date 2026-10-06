@@ -10,7 +10,7 @@ import path from 'node:path';
  * Plain ESM, no TypeScript syntax: `next.config.mjs` is loaded as-is by Node, so
  * `import type` here would be a parse error, not a type annotation.
  */
-const API_PROXY_TARGET = process.env.API_PROXY_TARGET ?? 'http://localhost:3001';
+const API_PROXY_TARGET = process.env.API_PROXY_TARGET ?? 'https://faithquestmultitier.onrender.com';
 
 const nextConfig = {
   // The production `Dockerfile` runs the pruned standalone server
@@ -58,6 +58,14 @@ const nextConfig = {
       {
         source: '/api/v1/:path*',
         destination: `${API_PROXY_TARGET}/api/v1/:path*`,
+      },
+      {
+        source: '/api/health',
+        destination: `${API_PROXY_TARGET}/api/v1/health`,
+      },
+      {
+        source: '/health',
+        destination: `${API_PROXY_TARGET}/api/v1/health`,
       },
     ];
   },

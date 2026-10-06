@@ -13,7 +13,8 @@ import { encodeGameShareCode } from './gameRepository';
  */
 export function buildGameJoinUrl(game: HuntGame, origin: string): string {
   const base = origin.replace(/\/+$/, '');
-  return `${base}/games#join=${encodeURIComponent(encodeGameShareCode(game))}`;
+  const code = game.shareCode ? encodeURIComponent(game.shareCode) : encodeURIComponent(encodeGameShareCode(game));
+  return `${base}/games#join=${code}`;
 }
 
 /** Best-effort page origin, for links built in the browser. */
@@ -36,30 +37,21 @@ export function buildShortJoinUrl(origin: string, code: string): string {
 
 /**
  * Builds the message a creator shares with players. It contains the hunt
- * number plus the self-contained share code, so players on any device can
- * join without a backend — they simply paste the whole message (or just the
- * code) into the Join field.
- *
- * `shortUrl`, when supplied, replaces the join link: the same destination in a
- * handful of characters, so a message that would otherwise run to tens of KB of
- * URL stays readable. The pasted code below is left intact — it is the fallback
- * for a device that cannot open a link at all, and shortening it would mean
- * resolving a code on the server, which is exactly what a guest without a
- * backend cannot do.
+ * number or share code, so players on any device can join.
  */
 export function buildGameShareMessage(
   game: HuntGame,
   origin = '',
   shortUrl?: string | null,
 ): string {
-  const code = encodeGameShareCode(game);
+  const code = game.shareCode ?? encodeGameShareCode(game);
   const anyKey = game.characters.some(character => character.key?.trim());
   const joinUrl = shortUrl ?? (origin ? buildGameJoinUrl(game, origin) : '');
   return [
     `⛪ FaithQuest treasure hunt: "${game.title}"`,
     game.description ? game.description : '',
     ``,
-    `Hunt number: ${game.id}`,
+    `Hunt code: ${game.shareCode ?? game.id}`,
     `Locations: ${game.characters.length} — every team is dealt its own order`,
     anyKey
       ? 'Keys belong to locations: each team is given the key to the first location of its own route in-app when the hunt opens.'
@@ -76,5 +68,5 @@ export function buildGameShareMessage(
 
 /** Short text for the share dialog title/subject. */
 export function getShareSubject(game: HuntGame): string {
-  return `Join my FaithQuest hunt: ${game.title} (${game.id})`;
+  return `Join my FaithQuest hunt: ${game.title} (${game.shareCode ?? game.id})`;
 }

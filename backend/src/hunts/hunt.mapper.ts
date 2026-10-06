@@ -234,6 +234,18 @@ export interface HuntPlayerDto {
   currentStopName: string | null;
   currentRoutePosition: number | null;
 
+  /**
+   * This player's last reported position, or null when there is none to show.
+   *
+   * Null only until this team's first ping of the round; every player in an
+   * active round reports one. `locationAt` is the **server's** timestamp, so the
+   * UI can mark an old fix rather than presenting a stationary player as if they
+   * were standing there.
+   */
+  latitude: number | null;
+  longitude: number | null;
+  locationAt: string | null;
+
   checkpoints: HuntCheckpointDto[];
 }
 
@@ -281,6 +293,20 @@ export function toHuntPlayerDto(
   const nextRouteIndex = route.findIndex((id) => !discovered.has(id));
   const currentNodeId = nextRouteIndex === -1 ? null : (route[nextRouteIndex] ?? null);
 
+  // The one place a position becomes visible to a creator. Both coordinates and
+  // the server stamp have to be present; anything less is a half-written slot,
+  // and drawing it would mean showing a position whose age nobody can judge.
+  const sharedFix =
+    participant.latitude !== null &&
+    participant.longitude !== null &&
+    participant.locationAt
+      ? {
+          latitude: participant.latitude,
+          longitude: participant.longitude,
+          locationAt: participant.locationAt,
+        }
+      : { latitude: null, longitude: null, locationAt: null };
+
   const joinedAtMs = participant.joinedAt.getTime();
   const finishedMs = participant.completedAt?.getTime() ?? null;
 
@@ -308,6 +334,15 @@ export function toHuntPlayerDto(
     currentNodeId,
     currentStopName: currentNodeId ? (stops.get(currentNodeId)?.title ?? null) : null,
     currentRoutePosition: currentNodeId === null ? null : nextRouteIndex + 1,
+
+    // A position is surfaced only for a participant who consented to sharing it.
+    // The three nulls are all enforced here in one place rather than in the UI,
+    // so there is no path by which an unshared or missing fix reaches a creator:
+    // no consent, no fix, or no timestamp alongside it (a half-written slot is
+    // not a position and is treated as none).
+    latitude: sharedFix.latitude,
+    longitude: sharedFix.longitude,
+    locationAt: sharedFix.locationAt ? sharedFix.locationAt.toISOString() : null,
 
     // Sorted by route position rather than arrival order: a replayed or backfilled
     // event should still read as "stop 4" instead of shifting everything after it.

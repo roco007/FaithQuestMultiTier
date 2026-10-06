@@ -1,5 +1,5 @@
 import { notFound, redirect } from 'next/navigation';
-import { resolveShortLink } from '../../../api/links.api';
+import { resolveShortLink } from '@/lib/api/links.api';
 
 /**
  * `/{g}/{code}` — the short form of a share link.

@@ -244,6 +244,15 @@ export function extractGameId(input: string): string | null {
   const legacy = text.match(LEGACY_ID_PATTERN) ?? text.match(LEGACY_HYPHEN_ID_PATTERN);
   if (legacy) return legacy[0].toUpperCase();
 
+  // A 6-character server share code, e.g. "SSQVX9" or quoted in a message "Hunt code: SSQVX9"
+  const codeLabelled = text.match(/(?:hunt|game)\s*(?:number|id|key|code)\s*[:#]?\s*([A-Za-z0-9]{6})\b/i);
+  if (codeLabelled) return codeLabelled[1].toUpperCase();
+
+  const fromJoin = text.match(/#join=([A-Za-z0-9]{6})\b/i);
+  if (fromJoin) return fromJoin[1].toUpperCase();
+
+  if (/^[A-Za-z0-9]{6}$/.test(text)) return text.toUpperCase();
+
   return null;
 }
 

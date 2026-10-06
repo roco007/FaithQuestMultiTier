@@ -3,6 +3,9 @@ import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   IsArray,
+  IsBoolean,
+  IsLatitude,
+  IsLongitude,
   IsOptional,
   IsString,
   Length,
@@ -58,6 +61,50 @@ export class JoinHuntDto {
    */
   @ApiPropertyOptional({
     description: 'Existing guest token, to re-join as the same guest.',
+    minLength: 64,
+    maxLength: 64,
+  })
+  @IsOptional()
+  @IsString()
+  @Length(64, 64)
+  @Matches(/^[0-9a-f]{64}$/, {
+    message: 'guestToken must be 64 lowercase hex characters.',
+  })
+  guestToken?: string;
+}
+
+/**
+ * `POST /api/v1/hunts/:huntId/location` — report this player's current position.
+ *
+ * Sent on a timer while a round is in progress (see `useLocationPing`), and
+ * written as a **single overwritten slot** on the participant rather than an
+ * append: the creator's map needs "where is each team right now", and a trail
+ * would retain far more about a player's movements than that purpose needs.
+ *
+ * A fix the server refuses (hunt over, never joined) is simply not sent again —
+ * the ping loop is fire-and-forget, so this endpoint deliberately returns the
+ * round's own progress rather than anything about other players.
+ */
+export class ReportLocationDto {
+  @ApiProperty({
+    example: 37.774929,
+    description: 'WGS84 latitude of the player right now.',
+  })
+  @Type(() => Number)
+  @IsLatitude()
+  latitude!: number;
+
+  @ApiProperty({
+    example: -122.419416,
+    description: 'WGS84 longitude of the player right now.',
+  })
+  @Type(() => Number)
+  @IsLongitude()
+  longitude!: number;
+
+  /** Which guest is pinging, when the caller has no account. */
+  @ApiPropertyOptional({
+    description: 'Guest token, when the caller has no account.',
     minLength: 64,
     maxLength: 64,
   })

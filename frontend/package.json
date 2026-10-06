@@ -4,12 +4,15 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "dev:local": "API_PROXY_TARGET=http://localhost:3001 next dev",
+    "dev:render": "API_PROXY_TARGET=https://faithquestmultitier.onrender.com next dev",
     "dev:tunnel": "node scripts/dev-tunnel.mjs",
     "build": "next build",
     "start": "next start",
     "start:tunnel": "node scripts/start-tunnel.mjs",
-    "test": "npm run test:manifest && npm run test:route",
+    "test": "npm run test:manifest && npm run test:route && npm run test:join",
     "test:route": "npx --yes tsx scripts/route.test.ts",
+    "test:join": "npx --yes tsx scripts/join.test.ts",
     "test:manifest": "node scripts/manifest.test.mjs"
   },
   "dependencies": {

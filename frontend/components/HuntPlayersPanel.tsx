@@ -1,10 +1,22 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Users, Clock, CheckCircle2, PlayCircle, AlertTriangle } from 'lucide-react';
-import type { HuntPlayerDto } from '../api/types';
+import type { HuntPlayerDto } from '@/lib/api/types';
 import { useHuntPlayers } from '../hooks/useHuntPlayers';
-import { formatDuration, formatIst, formatIstPrecise, legDurationMs } from '../utils/datetime';
+import { formatDuration, formatIst } from '../utils/datetime';
+import { PlayerLocationsMap, STALE_AFTER_MS } from './PlayerLocationsMap';
+import { Checkpoints } from './PlayerCheckpoints';
+
+/**
+ * How often the report — and so the map — refreshes.
+ *
+ * 3 s, matching the interval players report their position on
+ * (`LOCATION_PING_INTERVAL_MS`): the creator sees each fix within one interval of
+ * it being taken, and never sees a gap the players' own reporting could not
+ * have filled either.
+ */
+const POLL_INTERVAL_MS = 3_000;
 
 /**
  * The creator's view of who is playing their game.
@@ -18,6 +30,15 @@ export function HuntPlayersPanel({ huntId }: { huntId: string }) {
   // Which player's checkpoint timeline is open. Null = the list only, so the
   // panel stays scannable when a hunt has fifty players on it.
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+
+  // A marker only turns grey when its fix *ages past* the threshold, which no
+  // amount of polling would notice on its own: two fetches 3 s apart can both
+  // land inside the window. This ticks so staleness is re-evaluated in real time.
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1_000);
+    return () => clearInterval(timer);
+  }, []);
 
   if (error) {
     return (
@@ -36,9 +57,27 @@ export function HuntPlayersPanel({ huntId }: { huntId: string }) {
 
   const { summary, items, total, limit } = data;
   const pageCount = Math.max(1, Math.ceil(total / limit));
+  // Only players with a complete fix can be drawn, so the caption and the map
+  // agree on the same number.
+  const withPosition = items.filter(hasPosition);
 
   return (
     <section className="reportPanel" aria-label="Player progress">
+      {/* Hovering a dot opens a card of that team's stats. The stats are also in
+          the list below, which is the keyboard- and screen-reader-accessible path:
+          Leaflet markers are not focusable here, so this card is an enhancement
+          for pointer users rather than the only way to reach the information. */}
+      <PlayerLocationsMap players={items} now={now} />
+      <p className="mapCaption">
+        {withPosition.length === 0
+          ? 'No team has reported a position yet. Teams appear here as soon as they start playing — only their last position is ever kept, never the route they walked.'
+          : `Showing ${withPosition.length} of ${items.length} team${
+              items.length === 1 ? '' : 's'
+            } on this page. Updates every ${POLL_INTERVAL_MS / 1000}s; a grey dot is a position more than ${
+              STALE_AFTER_MS / 1000
+            }s old.`}
+      </p>
+
       <header className="reportSummary">
         <Stat icon={<Users size={16} aria-hidden />} label="Joined" value={summary.totalJoined} />
         <Stat
@@ -120,6 +159,18 @@ function Stat({
   );
 }
 
+/**
+ * True when this player has a complete, drawable fix — all three fields or none.
+ *
+ * Duplicated from `PlayerLocationsMap` rather than imported so the caption under
+ * the map and the map itself cannot disagree about who is counted.
+ */
+function hasPosition(player: HuntPlayerDto): boolean {
+  return (
+    player.latitude !== null && player.longitude !== null && player.locationAt !== null
+  );
+}
+
 /** A player: the summary line, plus their timeline when expanded. */
 function PlayerRow({
   player,
@@ -184,45 +235,5 @@ function PlayerRow({
 
       {isExpanded && <Checkpoints player={player} />}
     </li>
-  );
-}
-
-/**
- * One player's checkpoint timeline.
- *
- * Two durations per stop, and the distinction matters: "Took" is how long *this
- * stop* took (the gap from the previous one — what you compare between
- * players), while "Elapsed" is how far into the round they were. Showing only
- * the cumulative figure would make a fast player look slow.
- */
-function Checkpoints({ player }: { player: HuntPlayerDto }) {
-  if (player.checkpoints.length === 0) {
-    return <p className="reportMuted">No checkpoints cleared yet.</p>;
-  }
-
-  return (
-    <table className="reportTable">
-      <caption className="srOnly">Checkpoint timeline, times in IST</caption>
-      <thead>
-        <tr>
-          <th scope="col">Stop</th>
-          <th scope="col">Place</th>
-          <th scope="col">Reached (IST)</th>
-          <th scope="col">Took</th>
-          <th scope="col">Elapsed</th>
-        </tr>
-      </thead>
-      <tbody>
-        {player.checkpoints.map((checkpoint, index) => (
-          <tr key={checkpoint.nodeId}>
-            <td>{checkpoint.routePosition}</td>
-            <td>{checkpoint.stopName}</td>
-            <td>{formatIstPrecise(checkpoint.reachedAt)}</td>
-            <td>{formatDuration(legDurationMs(player.checkpoints, index))}</td>
-            <td>{formatDuration(checkpoint.elapsedMs)}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
   );
 }

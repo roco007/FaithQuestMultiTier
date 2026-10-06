@@ -17,14 +17,163 @@ export interface Dealable<T> {
   isTreasure: boolean;
 }
 
+/**
+ * Why a reorder request was refused, or null when it is a valid permutation.
+ *
+ * Returned rather than thrown so the check is a pure function of its inputs and
+ * can be unit-tested without a database; `HuntsService.reorderStops` turns a
+ * non-null result into the 422.
+ */
+export type ReorderRejection = 'DUPLICATE_ID' | 'UNKNOWN_ID' | 'COUNT_MISMATCH';
+
+/**
+ * Checks that `requestedIds` is an exact permutation of `currentIds`.
+ *
+ * This is the whole safety argument for the reorder endpoint, so it is
+ * deliberately strict rather than lenient:
+ *
+ * - **Exact permutation required.** Not "a prefix", not "a subset". A partial
+ *   list would either strand stops at their old positions (leaving duplicate
+ *   `sequence` values the unique index refuses) or silently renumber stops the
+ *   caller never mentioned — and a stop that moves without being named is
+ *   exactly the "moved a stop under a team's feet" outcome rule 2 forbids.
+ * - **Checked against this hunt's own stops.** An id from another hunt (or a
+ *   `QuestNode` id, or a guess) fails `UNKNOWN_ID`, so the endpoint can never
+ *   reorder one hunt using another hunt's stops.
+ * - **Duplicates rejected explicitly.** `[a, a, b]` would pass a naive
+ *   "same size, all known" check while leaving `b` out of the new order; naming
+ *   the fault is what lets the caller fix it.
+ *
+ * Order of checks is the order a caller most likely needs to hear about: a
+ * repeated id is a client bug, an unknown id is a stale id, and a short list is
+ * the common "I only sent the ones I moved" mistake.
+ */
+export function validateReorder(
+  currentIds: readonly string[],
+  requestedIds: readonly string[],
+): ReorderRejection | null {
+  const current = new Set(currentIds);
+
+  if (new Set(requestedIds).size !== requestedIds.length) return 'DUPLICATE_ID';
+
+  const unknown = requestedIds.filter(id => !current.has(id));
+  if (unknown.length > 0) return 'UNKNOWN_ID';
+
+  // With duplicates and unknown ids already excluded, equal length is enough to
+  // prove nothing was left out — but saying so explicitly keeps this correct if
+  // the checks above are ever reordered.
+  if (requestedIds.length !== current.size) return 'COUNT_MISMATCH';
+
+  return null;
+}
+
+/** Human-facing text for each rejection, thrown as a 422 by the service. */
+export const REORDER_REJECTION_MESSAGES: Record<ReorderRejection, string> = {
+  DUPLICATE_ID: 'The same stop is listed twice — send each stop exactly once.',
+  UNKNOWN_ID: 'That list names a stop this hunt does not have.',
+  COUNT_MISMATCH: 'Reordering must list every stop of the hunt, not just the ones moved.',
+};
+
 @Injectable()
 export class HuntRouteService {
   /** Freshly dealt order: walkable stops shuffled, treasure last. */
   deal<T extends Dealable<unknown>>(nodes: T[]): T[] {
     const treasure = nodes.find((node) => node.isTreasure) ?? null;
     const walkable = nodes.filter((node) => !node.isTreasure);
-    const shuffled = this.shuffle(walkable);
-    return treasure ? [...shuffled, treasure] : shuffled;
+    const pool = walkable.length >= 2 || !treasure ? nodes : walkable;
+    const effectiveTreasure = pool === nodes ? null : treasure;
+    const effectiveWalkable = pool === nodes ? nodes : walkable;
+
+    const shuffled = this.shuffle(effectiveWalkable);
+    return effectiveTreasure ? [...shuffled, effectiveTreasure] : shuffled;
+  }
+
+  /**
+   * Deals a route variation that has not been used by any existing player yet,
+   * or if all variations have been explored, picks among the least-used variations.
+   *
+   * Example (2 locations L1 and L2):
+   * - Player 1 (no existing routes): [L2, L1]
+   * - Player 2 (existing: [L2, L1]): [L1, L2]
+   * - Player 3 (existing: [L2, L1], [L1, L2]): [L2, L1] (least used / round-robin)
+   */
+  dealUniqueRoute<T extends Dealable<unknown>>(
+    nodes: T[],
+    existingRoutes: string[][],
+  ): string[] {
+    if (nodes.length === 0) return [];
+    if (nodes.length === 1) return [nodes[0].id];
+
+    const treasure = nodes.find((node) => node.isTreasure) ?? null;
+    const walkable = nodes.filter((node) => !node.isTreasure);
+
+    // If all or all-but-one are flagged as treasure (e.g. legacy default), permute all nodes.
+    const effectiveTreasure = walkable.length < 2 && nodes.length >= 2 ? null : treasure;
+    const effectiveWalkable = effectiveTreasure ? walkable : nodes;
+
+    const usageCounts = new Map<string, number>();
+    for (const r of existingRoutes) {
+      if (Array.isArray(r) && r.length > 0) {
+        const key = r.join('->');
+        usageCounts.set(key, (usageCounts.get(key) ?? 0) + 1);
+      }
+    }
+
+    const walkableIds = effectiveWalkable.map((n) => n.id);
+    const k = walkableIds.length;
+
+    if (k <= 7) {
+      // Start from the reversed authored list so the first variation differs from the authored order
+      const reversedIds = [...walkableIds].reverse();
+      const perms = this.generatePermutations(reversedIds);
+
+      const candidates = perms.map((perm) =>
+        effectiveTreasure ? [...perm, effectiveTreasure.id] : perm,
+      );
+
+      let minCount = Infinity;
+      for (const cand of candidates) {
+        const key = cand.join('->');
+        const count = usageCounts.get(key) ?? 0;
+        if (count < minCount) {
+          minCount = count;
+        }
+      }
+
+      const best = candidates.find((cand) => {
+        const key = cand.join('->');
+        return (usageCounts.get(key) ?? 0) === minCount;
+      });
+
+      return best ?? candidates[0];
+    }
+
+    // For large k (> 7), permutation space is > 40,000:
+    for (let attempt = 0; attempt < 200; attempt++) {
+      const shuffled = this.shuffle(walkableIds);
+      const cand = effectiveTreasure ? [...shuffled, effectiveTreasure.id] : shuffled;
+      const key = cand.join('->');
+      if (!usageCounts.has(key) || usageCounts.get(key) === 0) {
+        return cand;
+      }
+    }
+
+    const shuffled = this.shuffle(walkableIds);
+    return effectiveTreasure ? [...shuffled, effectiveTreasure.id] : shuffled;
+  }
+
+  private generatePermutations<T>(items: T[]): T[][] {
+    if (items.length <= 1) return [items];
+    const result: T[][] = [];
+    for (let i = 0; i < items.length; i++) {
+      const current = items[i];
+      const remaining = [...items.slice(0, i), ...items.slice(i + 1)];
+      const subPerms = this.generatePermutations(remaining);
+      for (const perm of subPerms) {
+        result.push([current, ...perm]);
+      }
+    }
+    return result;
   }
 
   /**

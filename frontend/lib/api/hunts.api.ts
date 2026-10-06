@@ -93,11 +93,35 @@ export const huntsApi = {
     return apiRequest<HuntDto>(`/hunts/${encodeURIComponent(huntId)}`);
   },
 
+  /** Preview a published hunt by its 6-character share code (unauthenticated). */
+  findByShareCode(code: string): Promise<HuntDto> {
+    return apiRequest<HuntDto>(`/hunts/by-code/${encodeURIComponent(code)}`);
+  },
+
   update(huntId: string, patch: UpdateHuntInput): Promise<HuntDto> {
     return apiRequest<HuntDto>(`/hunts/${encodeURIComponent(huntId)}`, {
       method: 'PATCH',
       body: patch,
     });
+  },
+
+  /**
+   * PATCH /hunts/:huntId/stops/order — reorder the hunt's stops.
+   *
+   * `nodeIds` must be **every** `HuntNode` id of this hunt in the wanted order;
+   * the server rejects a partial or duplicated list with 422 rather than moving
+   * only what it was given.
+   *
+   * This mutates stop *positions* only — the stop rows keep their ids, so a
+   * team's pinned route and progress are unaffected, and a hunt that is already
+   * published keeps the route its share link advertised. Use `publish` to deal a
+   * fresh route from the new order.
+   */
+  reorderStops(huntId: string, nodeIds: string[]): Promise<HuntDto> {
+    return apiRequest<HuntDto>(
+      `/hunts/${encodeURIComponent(huntId)}/stops/order`,
+      { method: 'PATCH', body: { nodeIds } },
+    );
   },
 
   remove(huntId: string): Promise<{ success: true }> {
@@ -154,6 +178,23 @@ export const huntsApi = {
   ): Promise<HuntProgressDto> {
     return apiRequest<HuntProgressDto>(
       `/hunts/${encodeURIComponent(huntId)}/discover`,
+      { method: 'POST', body: input },
+    );
+  },
+
+  /**
+   * POST /hunts/:huntId/location — report the caller's position.
+   *
+   * Sent on a 3 s timer while a round is in progress (see `useLocationPing`).
+   * Fire-and-forget, so it resolves to the round's own progress rather than
+   * anything about other players.
+   */
+  reportLocation(
+    huntId: string,
+    input: { latitude: number; longitude: number; guestToken?: string },
+  ): Promise<HuntProgressDto> {
+    return apiRequest<HuntProgressDto>(
+      `/hunts/${encodeURIComponent(huntId)}/location`,
       { method: 'POST', body: input },
     );
   },

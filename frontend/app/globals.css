@@ -3858,6 +3858,338 @@ a.btnGhost {
 /* Shown under the share sheet once a hunt is published. Colours are the app's
    existing slate scale; the two accents (green = finished/linked, bright green
    = live now) are the only new hues and both are already in use elsewhere. */
+
+/* The creator's live map of every team sharing a position.
+   A fixed height because the map has nothing to size itself from: Leaflet fills
+   its container, and a zero-height container renders an invisible, unusable
+   "map". The darkening filter matches the play map's tiles (see LeafletGameMap). */
+.playerMap {
+  width: 100%;
+  height: 320px;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  background: #0b1220;
+  margin-bottom: 4px;
+}
+/* OSM's light tiles are filtered down to the app's navy theme, exactly as on the
+   play map — otherwise the creator's panel is a bright white slab in a dark
+   sheet.
+
+   Scoped to the tile pane rather than the whole container on purpose: a CSS
+   filter applies to every descendant, so putting it on `.playerMap` would also
+   dim the hover cards to 72% brightness and put a grey filter over them. */
+.playerMap .leaflet-tile-pane {
+  filter: brightness(0.72) saturate(0.85);
+}
+@media (min-width: 720px) {
+  /* Side-by-side with the list on a wide screen: the map is what a creator
+     glances at, and making them scroll past each other would double the height
+     for no gain. */
+  .playerMap { height: 380px; }
+}
+
+/* The standalone page's map: fills whatever box it is given, so the page can
+   make it the whole view. `min-height` is load-bearing in the flex/grid
+   parents below — without it a flex child refuses to shrink below its content,
+   which here is Leaflet measuring an empty div, and the page grows a scrollbar
+   instead of the map filling the screen.
+
+   The floor is small because this variant is viewport-driven: the shell is
+   pinned to exactly one screen (see `.appShell:has(.liveMapPage)`), so a tall
+   floor here would overflow and be clipped rather than scroll. The 320px floor
+   on `.playerMap` above belongs to the *panel*, which lives in a scrolling
+   sheet and has room to be tall. */
+.playerMapFull {
+  height: 100%;
+  min-height: 200px;
+}
+
+/* --- Standalone live map page (/hunts/live-map) --------------------------- */
+/* This page is a *view*, not a document: a map that takes everything, a roster,
+   and a one-line footnote. It must never scroll as a whole — only the roster
+   inside it does.
+
+   There is no header on this page. The creator's brief is a bare map on a second
+   monitor, so the app nav ribbon and the page's own title/back-link row are both
+   suppressed (see `TopNav` and `.appShell:has(.liveMapPage)`); what is left of
+   the chrome is one floating fullscreen button over the map. That is why the
+   padding here is just enough to inset the map from the screen edge rather than
+   enough to clear a bar that is no longer there.
+
+   `.liveMapPage` is `height: 100%` of `.appMain` rather than `100dvh`. It used to
+   be `100dvh`, which silently over-counted by the height of the `TopNav` above
+   it: the page was one nav taller than the viewport, so the bottom of the map —
+   and the footnote — sat permanently below the fold with no way to reach them. A
+   percentage only resolves because the shell is given a *definite* height here,
+   which `min-height: 100vh` on every other route does not do; hence the `:has()`
+   rule on `.appShell`. Suppressing the nav is what finally makes that
+   correction-free: the map now owns the full viewport height.
+
+   `:has()` is scoped to this one route so scrolling pages are untouched. */
+.appShell:has(.liveMapPage) {
+  height: 100dvh;
+  overflow: hidden;
+}
+
+/* The nav is not rendered at all on this route (see `BARE_ROUTES` in TopNav),
+   so the shell starts with `.appMain` and the map reaches the top of the screen. */
+
+.liveMapPage {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 10px;
+  gap: 8px;
+  box-sizing: border-box;
+}
+
+.liveMapHeader {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+/* Map beside roster on a wide screen, stacked on a phone. `min-height: 0` on
+   both so the grid can actually shrink the map to fit the viewport.
+
+   The rows are explicit on the stacked layout. Left to its own devices a grid
+   row is `auto`, which sizes the map from its content — and the map's content
+   is Leaflet, which reports whatever height it was last told. The pair below
+   pins the map to the space that is actually left over and gives the roster a
+   bounded share, so the page stays exactly one screen tall on a phone too. */
+.liveMapSplit {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr;
+  grid-template-rows: minmax(0, 1.6fr) minmax(0, 1fr);
+  gap: 12px;
+}
+@media (min-width: 900px) {
+  .liveMapSplit {
+    grid-template-columns: minmax(0, 1fr) 340px;
+    grid-template-rows: minmax(0, 1fr);
+  }
+}
+
+.liveMapCanvas {
+  min-height: 0;
+  display: flex;
+  /* Positioning context for the fullscreen button floated over the map. */
+  position: relative;
+}
+.liveMapCanvas > .playerMap {
+  flex: 1;
+}
+
+/* The one control this page keeps, floated over the map's top-right corner.
+   Absolutely positioned rather than in a header row so the map gets the full
+   height, and given a translucent dark backing because it sits on top of
+   bright OSM tiles where a plain ghost button would be unreadable.
+
+   `z-index` clears Leaflet's own panes: the tile/overlay/marker panes run to
+   700 and the map's control container (the zoom buttons, which also live at the
+   top of the map) to 1000, so anything below that would be painted over by the
+   map itself. The top-left corner is deliberately left alone — that is where
+   Leaflet puts the zoom control, and this button goes to the opposite side so
+   the two never overlap. */
+.liveMapFloatBtn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.82);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+}
+.liveMapFloatBtn:hover {
+  background: rgba(30, 41, 59, 0.92);
+}
+
+.liveMapRoster {
+  min-height: 0;
+  overflow-y: auto;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: rgba(15, 23, 42, 0.6);
+}
+
+/* The hunt's name, heading the roster. Sticky at the top of the scrolling list so
+   a creator who has scrolled down through the teams still knows which hunt they
+   are looking at — that is the whole reason the name is here at all. The opaque
+   background hides rows scrolling underneath it; `margin-bottom` clears the gap
+   that `gap` cannot reach inside a scrolling box. */
+.liveMapRosterTitle {
+  position: sticky;
+  top: -10px;
+  margin: 0 0 8px;
+  padding: 2px 0 8px;
+  background: #0f172a;
+  font-size: 14.5px;
+  font-weight: 800;
+  letter-spacing: -0.2px;
+  color: var(--text);
+  /* Truncated, never wrapped: a long title must not push the team list down. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Team name + colour swatch, tying a roster row to its dot on the map.
+   The swatch sits inside `.reportName` now that the row is a disclosure button,
+   so it only needs to not shrink; the flex row it lived in is gone. */
+.liveMapSwatch {
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid #e0f2fe;
+  box-sizing: content-box;
+}
+
+/* A team name typed by a player, as opposed to the account name beside it.
+   Truncated rather than wrapped: an arbitrarily long name must not push the
+   progress figures off the row. */
+.reportNameText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The "Times" affordance on a roster row, so it reads as expandable rather than
+   as a row that happens to be a button. Muted and last in the meta line so it
+   never competes with the progress figures it sits beside. */
+.reportToggle {
+  margin-left: auto;
+  font-size: 11px;
+  color: #64748b;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  border-radius: 999px;
+  padding: 1px 7px;
+  white-space: nowrap;
+}
+.reportRowHead:hover .reportToggle { color: #94a3b8; border-color: rgba(148, 163, 184, 0.5); }
+
+.liveMapFootnote {
+  margin: 0;
+  color: #94a3b8;
+  font-size: 12.5px;
+}
+
+/* Error/no-hunt states get the middle of the viewport, not a strip at the top. */
+.liveMapBody {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+/* Caption under the map — states what is and is not shown, so a missing dot is
+   never mistaken for a bug. */
+.mapCaption {
+  color: #94a3b8;
+  font-size: 13px;
+  margin: 8px 0 0;
+}
+
+/* Hover card for one team on the creator's map (see playerTooltipHtml).
+   Leaflet owns the outer element — this class strips its default white bubble so
+   the card matches the app's dark panels instead of a bright box on dark tiles. */
+.playerTooltipShell {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+}
+.playerTooltipShell::before {
+  /* Leaflet's tooltip arrow. Repointed at the team colour so the card reads as
+     belonging to the dot it belongs to, and tinted to match the shell. */
+  border-top-color: rgba(11, 18, 32, 0.97) !important;
+}
+
+.playerTooltip {
+  min-width: 190px;
+  max-width: 260px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  /* A hairline in the team's own colour ties the card to its dot without
+     relying on the initial letter alone to identify the team. */
+  border: 1px solid color-mix(in srgb, var(--team-color) 55%, transparent);
+  border-left: 3px solid var(--team-color);
+  background: rgba(11, 18, 32, 0.97);
+  color: #e2e8f0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  text-align: left;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  cursor: default;
+}
+
+.playerTooltipHead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.playerTooltipName {
+  font-weight: 700;
+  font-size: 13.5px;
+  color: #f8fafc;
+  /* A guest can type a long team name on a phone; the card must not stretch
+     across the map with it. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.playerTooltipTag {
+  flex-shrink: 0;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(148, 163, 184, 0.2);
+  color: #94a3b8;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.playerTooltipProgress {
+  color: var(--team-color);
+  font-weight: 700;
+  font-size: 13px;
+  margin-bottom: 2px;
+}
+
+/* Where they are up to — the line a creator scans for when looking for a team
+   that has gone quiet. */
+.playerTooltipStatus {
+  color: #e2e8f0;
+  margin-bottom: 3px;
+}
+
+.playerTooltipFacts {
+  color: #94a3b8;
+  font-size: 11.5px;
+}
+
+/* Liveness, last and in its own colour: a greyed dot must never read as live. */
+.playerTooltipFresh {
+  margin-top: 6px;
+  padding-top: 5px;
+  border-top: 1px solid rgba(148, 163, 184, 0.2);
+  font-size: 11px;
+  font-weight: 600;
+}
+
 .reportPanel {
   border-top: 1px solid rgba(148, 163, 184, 0.25);
   margin-top: 20px;

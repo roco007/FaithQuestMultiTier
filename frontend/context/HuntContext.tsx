@@ -19,7 +19,7 @@ import {
   extractShareCode,
 } from '../services/gameRepository';
 import { remoteGameRepository } from '../services/remoteGameRepository';
-import { isApiConfigured } from '../api/client';
+import { isApiConfigured } from '@/lib/api/client';
 import { useAuth } from './AuthContext';
 import { generateCharacterKey, keyMatches } from '../utils/keys';
 import {
@@ -83,6 +83,7 @@ interface HuntContextType {
    *  the character's discovery key or an Error is thrown. */
   discoverCurrentCharacter: (presentedKey?: string) => Promise<DiscoverResult | null>;
   getProgressFor: (gameId: string) => Promise<HuntProgress | null>;
+  getGame: (id: string) => Promise<HuntGame | null>;
   /** Re-reads games/progress from storage (after external edits). */
   reload: () => Promise<void>;
 }
@@ -191,6 +192,56 @@ function normaliseGame(
   };
 }
 
+/**
+ * Re-keys a hunt that arrived as a share payload when its id is already taken
+ * on this device by a **different** hunt.
+ *
+ * A payload's `id` is the *creator's* device-local counter — `HuntGame.id` is
+ * documented as meaningless off the device it was made on — so `"0"` on the
+ * creator's laptop is also `"0"` on the phone. Two devices therefore mint the
+ * same ids from the same starting point, and a phone that has its own hunt `"0"`
+ * receives a friend's hunt `"0"`.
+ *
+ * Left alone this is not a cosmetic clash, it silently re-points the join at the
+ * wrong hunt. `saveGame` overwrites the phone's own hunt; `pushGame` then finds
+ * that id already in the sync map, resolves it to the phone's **own** server
+ * UUID, and treats the friend's stops as an edit to it; `shadowSync` finally
+ * joins `reference.huntId` — the phone's own hunt. The friend's creator watches
+ * an empty report while the player plays a hunt that does not exist on their
+ * side. Matches by `shareCode`, so it is the one identity that survives the trip.
+ *
+ * Three cases, in order:
+ *  1. this hunt is already on the device (under any id) — reuse that id, so
+ *     re-opening the invite link stays idempotent and never forks a duplicate;
+ *  2. the incoming id is free — keep it, so a payload that collides with nothing
+ *     behaves exactly as before;
+ *  3. the id belongs to a different hunt — allocate the next free number.
+ *
+ * Only ever called for a payload. A hunt looked up by its own short id is
+ * already in this device's id space and must not be moved.
+ *
+ * Exported for `scripts/join.test.ts`, which drives the three cases above
+ * directly — this is the regression guard for a join silently re-pointing at
+ * the wrong hunt, which no screen surfaces as an error.
+ */
+export async function rekeyCollidingLocalId(game: HuntGame): Promise<HuntGame> {
+  if (!game.id) return game;
+
+  const stored = await localGameRepository.listGames();
+
+  // (1) A previous join of this very hunt, kept under the id it was re-keyed to.
+  if (game.shareCode) {
+    const twin = stored.find((candidate) => candidate.shareCode === game.shareCode);
+    if (twin) return { ...game, id: twin.id };
+  }
+
+  // (2) Nothing on this device holds that id.
+  if (!stored.some((candidate) => candidate.id === game.id)) return game;
+
+  // (3) Someone else's hunt — take the next number, as `createGame` does.
+  return { ...game, id: nextGameId(stored.map((candidate) => candidate.id)) };
+}
+
 export const HuntProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   // Adapter selection is the *only* change here (plan §3): the REST-backed
   // repository whenever a backend is configured, today's localStorage
@@ -264,7 +315,8 @@ export const HuntProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const game = normaliseGame(draft, existing, allocatedId);
       await repository.saveGame(game);
       await reload();
-      return game;
+      const saved = await repository.getGame(game.id);
+      return saved ?? game;
     },
     [authStatus, createdGames, repository, reload]
   );
@@ -287,6 +339,11 @@ export const HuntProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const getProgressFor = useCallback(
     async (gameId: string): Promise<HuntProgress | null> => repository.getProgress(gameId),
+    [repository]
+  );
+
+  const getGame = useCallback(
+    async (id: string): Promise<HuntGame | null> => repository.getGame(id),
     [repository]
   );
 
@@ -320,6 +377,15 @@ export const HuntProvider: React.FC<{ children: React.ReactNode }> = ({ children
         throw new Error('This game has no characters placed yet.');
       }
 
+      // A payload's id belongs to the *creator's* device, so it can collide with
+      // a hunt already here under a different identity — which would send the
+      // whole join (and every later ping) to that other hunt instead. Give it a
+      // free local id first. A short-id lookup above is already in this device's
+      // id space, so it is left alone.
+      if (shareCode) {
+        game = await rekeyCollidingLocalId(game);
+      }
+
       // Backfill discovery keys for games saved before keys existed, so the
       // key chain works for legacy share codes too.
       game = {
@@ -346,7 +412,7 @@ export const HuntProvider: React.FC<{ children: React.ReactNode }> = ({ children
           // the share link), or a deal of the walkable locations for a hunt saved
           // before routes existed. Progress that already exists keeps the route
           // it joined with.
-          route: game.route?.length ? [...game.route] : buildRoute(game.characters),
+          route: buildRoute(game.characters),
           discoveredCharacterIds: [],
           ...(resolvedTeamName ? { teamName: resolvedTeamName } : {}),
           status: 'active',
@@ -469,6 +535,7 @@ export const HuntProvider: React.FC<{ children: React.ReactNode }> = ({ children
       leaveGame,
       discoverCurrentCharacter,
       getProgressFor,
+      getGame,
       reload,
     }),
     [
@@ -485,6 +552,7 @@ export const HuntProvider: React.FC<{ children: React.ReactNode }> = ({ children
       leaveGame,
       discoverCurrentCharacter,
       getProgressFor,
+      getGame,
       reload,
     ]
   );

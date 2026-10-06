@@ -184,6 +184,8 @@ describe('API e2e — register, login, profile, completion, hunts', () => {
   let huntId = '';
   let shareCode = '';
   let publishedRoute: string[] = [];
+  /** This hunt's stop ids in authored order, kept for the reorder assertions. */
+  let huntStopIds: string[] = [];
 
   it('POST /hunts creates a draft from catalogue nodes → 201', async () => {
     const res = await http()
@@ -200,6 +202,7 @@ describe('API e2e — register, login, profile, completion, hunts', () => {
     huntId = res.body.id;
     shareCode = res.body.shareCode;
     assert.ok(huntId && shareCode);
+    huntStopIds = res.body.characters.map((character: { id: string }) => character.id);
   });
 
   it('POST /hunts/:id/publish → PUBLISHED with a dealt route', async () => {
@@ -212,6 +215,116 @@ describe('API e2e — register, login, profile, completion, hunts', () => {
     assert.equal(publish.body.route.length, 3);
     shareCode = publish.body.shareCode;
     publishedRoute = publish.body.route;
+  });
+
+  // ---------------------------------------------------------------------------
+  // Reordering stops (PATCH /hunts/:id/stops/order)
+  //
+  // The interesting property is not "the order changed" but "nothing else did":
+  // `HuntNode` carries `@@unique([huntId, sequence])`, so the write has to dodge a
+  // mid-update collision, and a reorder must not disturb a hunt that is already
+  // published or a team already walking it.
+  // ---------------------------------------------------------------------------
+
+  /** This hunt's stops, re-read fresh (ids and authored order as the server sees them). */
+  const fetchStops = async () => {
+    const res = await http()
+      .get(`/api/v1/hunts/${huntId}`)
+      .set('Authorization', `Bearer ${accessToken}`)
+      .expect(200);
+    return res.body.characters as { id: string; order: number }[];
+  };
+
+  it('PATCH /hunts/:id/stops/order rotates the stops → 200 with the new order', async () => {
+    // A full rotation, not a swap: every stop moves, and the write collides with
+    // `@@unique([huntId, sequence])` on the very first row if it is not two-phase.
+    const rotated = [...huntStopIds.slice(1), huntStopIds[0]];
+    const res = await http()
+      .patch(`/api/v1/hunts/${huntId}/stops/order`)
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({ nodeIds: rotated })
+      .expect(200);
+
+    assert.deepEqual(
+      res.body.characters.map((character: { id: string }) => character.id),
+      rotated,
+    );
+    // 1..n, dense — no negative residue from the parking phase.
+    assert.deepEqual(
+      res.body.characters.map((character: { order: number }) => character.order),
+      [1, 2, 3],
+    );
+  });
+
+  it('the rotated order survives a re-read (it is the DB, not just the response)', async () => {
+    const stops = await fetchStops();
+    const ids = stops.map(stop => stop.id);
+    assert.deepEqual(ids, [...huntStopIds.slice(1), huntStopIds[0]]);
+    assert.deepEqual(
+      stops.map(stop => stop.order),
+      [1, 2, 3],
+    );
+    // Restore the original order so the join/gate steps below run on it.
+    await http()
+      .patch(`/api/v1/hunts/${huntId}/stops/order`)
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({ nodeIds: huntStopIds })
+      .expect(200);
+  });
+
+  it('a partial list → 422 VALIDATION_ERROR and the order is untouched', async () => {
+    // The common client mistake: send only the stops that moved. Accepting this
+    // would strand the rest at their old positions (duplicate `sequence`) or
+    // renumber stops the caller never mentioned.
+    const res = await http()
+      .patch(`/api/v1/hunts/${huntId}/stops/order`)
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({ nodeIds: [huntStopIds[1], huntStopIds[0]] })
+      .expect(422);
+    assert.equal(res.body.error.code, 'VALIDATION_ERROR');
+
+    const stops = await fetchStops();
+    assert.deepEqual(
+      stops.map(stop => stop.id),
+      huntStopIds,
+    );
+  });
+
+  it('a duplicated stop → 422 and the order is untouched', async () => {
+    // Right length, all-known ids: the case a naive "same size + all known"
+    // check would pass while silently dropping the third stop.
+    const res = await http()
+      .patch(`/api/v1/hunts/${huntId}/stops/order`)
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({ nodeIds: [huntStopIds[0], huntStopIds[0], huntStopIds[1]] })
+      .expect(422);
+    assert.equal(res.body.error.code, 'VALIDATION_ERROR');
+
+    const stops = await fetchStops();
+    assert.deepEqual(
+      stops.map(stop => stop.id),
+      huntStopIds,
+    );
+  });
+
+  it('an unknown stop id → 422 (one hunt can never be reordered with another’s stops)', async () => {
+    const res = await http()
+      .patch(`/api/v1/hunts/${huntId}/stops/order`)
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({ nodeIds: [huntStopIds[0], huntStopIds[1], 'not-a-stop-of-this-hunt'] })
+      .expect(422);
+    assert.equal(res.body.error.code, 'VALIDATION_ERROR');
+  });
+
+  it('reordering keeps the published route and the hunt published', async () => {
+    // Rule 2: a share link already in players' hands must keep describing the
+    // hunt they joined, so an authoring edit is not a re-publish.
+    const res = await http()
+      .get(`/api/v1/hunts/${huntId}`)
+      .set('Authorization', `Bearer ${accessToken}`)
+      .expect(200);
+    assert.equal(res.body.status, 'PUBLISHED');
+    assert.deepEqual(res.body.route, publishedRoute);
   });
 
   it('GET /hunts/:id/progress before joining → 403 HUNT_NOT_JOINED', async () => {
@@ -526,7 +639,6 @@ describe('API e2e — register, login, profile, completion, hunts', () => {
       assert.equal(script.body.error.code, 'VALIDATION_ERROR');
       await http().post('/api/v1/links').send({ target: 'not a url' }).expect(400);
     });
-
     it('the origin is dropped, so a stored link can never redirect off this app', async () => {
       const res = await http()
         .post('/api/v1/links')
@@ -844,6 +956,194 @@ describe('API e2e — register, login, profile, completion, hunts', () => {
         .expect(403);
       assert.equal(res.body.error.code, 'HUNT_NOT_JOINED');
     });
+
+  /**
+   * Live player location — the creator's map.
+   *
+   * Reported unconditionally while a round is in progress, so these assertions
+   * are about what is *bounded* rather than what is permitted: a creator can
+   * only read positions for a hunt they created, can never recover where
+   * anybody walked, and can never see a team that has not yet reported one.
+   */
+  describe('live player location — unconditional, last-fix-only, author-only', () => {
+    const HERE = { latitude: 37.7749, longitude: -122.4194 };
+    const THERE = { latitude: 37.785, longitude: -122.41 };
+    let mapHuntId = '';
+    let guestToken = '';
+    let otherToken = '';
+
+    const report = async (
+      huntId: string,
+      token: string,
+      body: Record<string, unknown>,
+      expected = 201,
+    ) =>
+      http()
+        .post(`/api/v1/hunts/${huntId}/location`)
+        .send({ ...body, guestToken: token })
+        .expect(expected);
+
+    /** Every player row the creator can see. */
+    const rows = async () => {
+      const res = await http()
+        .get(`/api/v1/hunts/${mapHuntId}/players`)
+        .set('Authorization', `Bearer ${accessToken}`)
+        .expect(200);
+      return res.body.items as {
+        teamName: string | null;
+        latitude: number | null;
+        longitude: number | null;
+        locationAt: string | null;
+      }[];
+    };
+
+    /** The row for one named team. */
+    const rowFor = async (teamName: string) => {
+      const found = (await rows()).find(player => player.teamName === teamName);
+      assert.ok(found, `a row for ${teamName}`);
+      return found;
+    };
+
+    it('a creator publishes a hunt and two guests join it', async () => {
+      const hunt = await http()
+        .post('/api/v1/hunts')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .send({
+          title: 'Location Map Walk',
+          nodeIds: ['node_01_chapel', 'node_02_cloister'],
+          publish: true,
+        })
+        .expect(201);
+      mapHuntId = hunt.body.id;
+
+      // Guests join with no session at all — the realistic case, since most
+      // players arrive from a share link.
+      const first = await http()
+        .post('/api/v1/hunts/join')
+        .send({ shareCode: hunt.body.shareCode, teamName: 'Pilgrims' })
+        .expect(201);
+      guestToken = first.body.guestToken;
+
+      const second = await http()
+        .post('/api/v1/hunts/join')
+        .send({ shareCode: hunt.body.shareCode, teamName: 'Wardens' })
+        .expect(201);
+      otherToken = second.body.guestToken;
+
+      assert.ok(guestToken && otherToken, 'both guests got a token');
+    });
+
+    it('a team that has not pinged yet has no position to show', async () => {
+      // Sharing is unconditional, but a position only exists once the first ping
+      // lands — so a just-joined team is absent from the map rather than
+      // misplaced at some default coordinate.
+      const row = await rowFor('Wardens');
+      assert.equal(row.latitude, null);
+      assert.equal(row.longitude, null);
+      assert.equal(row.locationAt, null);
+    });
+
+    it('a reported position is stored and shown to the creator immediately', async () => {
+      // No consent step, no flag: one ping is enough to put the team on the map.
+      await report(mapHuntId, guestToken, HERE);
+
+      const shown = await rowFor('Pilgrims');
+      assert.equal(Number(shown.latitude), HERE.latitude);
+      assert.equal(Number(shown.longitude), HERE.longitude);
+      assert.ok(shown.locationAt, 'stamped with the server clock');
+    });
+
+    it('every team that reports appears — several on one map at a time', async () => {
+      // The creator's map is explicitly multi-player, so a second team must be
+      // able to appear alongside the first rather than replacing it.
+      const before = (await rows()).filter(player => player.latitude !== null).length;
+      assert.equal(before, 1, 'only the Pilgrims have reported so far');
+
+      await report(mapHuntId, otherToken, THERE);
+
+      const withFix = (await rows()).filter(player => player.latitude !== null);
+      assert.equal(withFix.length, 2, 'both teams are on the map at once');
+      assert.deepEqual(
+        withFix.map(player => Number(player.latitude)).sort(),
+        [HERE.latitude, THERE.latitude].sort(),
+      );
+    });
+
+    it('the fix is OVERWRITTEN, never appended — no trail of where people walked', async () => {
+      await report(mapHuntId, guestToken, THERE);
+
+      const moved = await rowFor('Pilgrims');
+      assert.equal(Number(moved.latitude), THERE.latitude, 'now the second fix');
+      assert.equal(Number(moved.longitude), THERE.longitude);
+
+      // Move back; the store must hold the latest fix and nothing else. The
+      // schema has exactly one coordinate slot per participant, so a trail is
+      // not merely unexposed — it is unrepresentable.
+      await report(mapHuntId, guestToken, HERE);
+      const back = await rowFor('Pilgrims');
+      assert.equal(Number(back.latitude), HERE.latitude);
+    });
+
+    it('the report stays author-only: another player cannot read anybody’s positions', async () => {
+      const other = await http()
+        .post('/api/v1/auth/register')
+        .send({
+          email: `e2e_loc_${suffix}@example.com`,
+          username: `e2e_loc_${suffix}`,
+          password,
+          displayName: 'Nosy',
+        })
+        .expect(201);
+
+      const res = await http()
+        .get(`/api/v1/hunts/${mapHuntId}/players`)
+        .set('Authorization', `Bearer ${other.body.accessToken}`)
+        .expect(403);
+      assert.equal(res.body.error.code, 'FORBIDDEN');
+
+      // …and signed out is a 401, not an empty list that reads as "no players".
+      const anon = await http().get(`/api/v1/hunts/${mapHuntId}/players`).expect(401);
+      assert.equal(anon.body.error.code, 'UNAUTHORIZED');
+    });
+
+    it('out-of-range coordinates are refused rather than clamped', async () => {
+      await http()
+        .post(`/api/v1/hunts/${mapHuntId}/location`)
+        .send({ latitude: 999, longitude: 0, guestToken })
+        .expect(400);
+      await http()
+        .post(`/api/v1/hunts/${mapHuntId}/location`)
+        .send({ latitude: 0, longitude: 999, guestToken })
+        .expect(400);
+    });
+
+    it('a client cannot forge the fix time — the field is refused outright', async () => {
+      // A client-supplied `locationAt` could be backdated to make a fix look live
+      // for hours. It never reaches the service at all: the global whitelist pipe
+      // strips/rejects unknown fields, so the attempt is a 400 rather than a
+      // silently-ignored extra.
+      const forged = await http()
+        .post(`/api/v1/hunts/${mapHuntId}/location`)
+        .send({ ...HERE, locationAt: '1999-01-01T00:00:00.000Z', guestToken })
+        .expect(400);
+      assert.equal(forged.body.error.code, 'VALIDATION_ERROR');
+
+      // And the stored fix is stamped by the server regardless.
+      await report(mapHuntId, guestToken, HERE);
+      const row = await rowFor('Pilgrims');
+      const stamped = new Date(row.locationAt as string).getTime();
+      assert.ok(
+        Math.abs(Date.now() - stamped) < 60_000,
+        `server stamped it now (got ${row.locationAt})`,
+      );
+    });
+
+    it('pinging a hunt you have not joined → 403', async () => {
+      await http()
+        .post(`/api/v1/hunts/${mapHuntId}/location`)
+        .send({ ...HERE, guestToken: 'f'.repeat(64) })
+        .expect(403);
+    });
   });
 });
-
+});

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { mintShortLink } from '../api/links.api';
+import { mintShortLink } from '@/lib/api/links.api';
 import { buildShortJoinUrl, currentOrigin } from '../services/shareGame';
 
 /**

@@ -1,6 +1,6 @@
 import { apiRequest } from './client';
 import type { Paginated, QuestCompletionResult, QuestNodeDto } from './types';
-import type { ChurchNode, LandmarkCategory, NodeReward, Puzzle } from '../types/node';
+import type { ChurchNode, LandmarkCategory, NodeReward, Puzzle } from '@/types/node';
 
 /** The coordinates a device measured — the only thing a completion may send. */
 export interface DevicePosition {

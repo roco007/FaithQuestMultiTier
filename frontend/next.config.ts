@@ -1,6 +1,8 @@
 import path from 'node:path';
 import type { NextConfig } from 'next';
 
+const API_PROXY_TARGET = process.env.API_PROXY_TARGET ?? 'https://faithquestmultitier.onrender.com';
+
 const nextConfig: NextConfig = {
   // The production `Dockerfile` runs the pruned standalone server
   // (`.next/standalone/server.js`) instead of the full source tree.
@@ -22,6 +24,22 @@ const nextConfig: NextConfig = {
   // scheme and no port. `*` matches exactly one label, so `192.168.*.*` covers
   // any home/office LAN.
   allowedDevOrigins: ['192.168.*.*', '192.168.0.105', '*.local', '*.trycloudflare.com'],
+  async rewrites() {
+    return [
+      {
+        source: '/api/v1/:path*',
+        destination: `${API_PROXY_TARGET}/api/v1/:path*`,
+      },
+      {
+        source: '/api/health',
+        destination: `${API_PROXY_TARGET}/api/v1/health`,
+      },
+      {
+        source: '/health',
+        destination: `${API_PROXY_TARGET}/api/v1/health`,
+      },
+    ];
+  },
 };
 
 export default nextConfig;

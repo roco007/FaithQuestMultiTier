@@ -12,9 +12,25 @@ const LINKS = [
   { href: '/profile', label: 'Profile', icon: User },
 ];
 
+/**
+ * Routes that opt out of the nav ribbon entirely.
+ *
+ * `/hunts/live-map` is a display view, not a destination inside the app: it is
+ * meant to be thrown on a second monitor and read at a glance, where a row of
+ * links and a brand mark are just pixels stolen from the map. It also renders no
+ * page header of its own, so the ribbon was the last piece of chrome left — see
+ * the `.appShell:has(.liveMapPage)` rules in globals.css, which rely on the nav
+ * being absent to give the map the full viewport height.
+ *
+ * Escape and the browser's back button are the way off this page; the floating
+ * fullscreen button covers leaving fullscreen.
+ */
+const BARE_ROUTES = ['/hunts/live-map'];
+
 /** Primary navigation, replacing the native bottom tab bar. */
 export function TopNav() {
   const pathname = usePathname();
+  if (BARE_ROUTES.some(route => pathname.startsWith(route))) return null;
 
   return (
     <nav className="topNav">

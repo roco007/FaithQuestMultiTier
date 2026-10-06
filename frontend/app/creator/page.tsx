@@ -15,7 +15,6 @@ import { Modal } from '../../components/Modal';
 import { buildGameJoinUrl, buildGameShareMessage, currentOrigin, getShareSubject } from '../../services/shareGame';
 import { ShareLink } from '../../components/ShareLink';
 import { HuntPlayersPanel } from '../../components/HuntPlayersPanel';
-import { useShortLink } from '../../hooks/useShortLink';
 import { downloadHuntGame, parseHuntGameJson, buildHuntOrder, type ImportedHunt } from '../../services/huntFile';
 import { triggerHaptic } from '../../utils/sound';
 
@@ -252,24 +251,15 @@ function CreatorEditor() {
    * there is no separate "Copy invite link" button any more.
    */
 
-  /** Invite link shown in the publish sheet, rebuilt on every render so it always
-   *  matches the origin the creator is actually browsing on. */
+  /** Invite link shown in the publish sheet, carrying the share code. */
   const joinUrl = publishedGame ? buildGameJoinUrl(publishedGame, currentOrigin()) : '';
-  /**
-   * Its short form, minted while the publish panel is open. `null` until it
-   * arrives — and for good if no backend can mint one — which every use below
-   * reads as "hand out the full link instead". Declared before the auth early
-   * return so the hook runs on every render, as React requires.
-   */
-  const shortJoinUrl = useShortLink(joinUrl);
-  /** What the share sheet and the copied message both actually hand out. */
-  const inviteUrl = shortJoinUrl ?? joinUrl;
+  const inviteUrl = joinUrl;
 
   const handleCopyShare = async () => {
     if (!publishedGame) return;
     try {
       await navigator.clipboard.writeText(
-        buildGameShareMessage(publishedGame, currentOrigin(), shortJoinUrl)
+        buildGameShareMessage(publishedGame, currentOrigin(), inviteUrl)
       );
       void triggerHaptic('success');
     } catch {
@@ -674,7 +664,7 @@ function CreatorEditor() {
               }
             />
 
-            <div className="shareCode mono">{publishedGame.id}</div>
+            <div className="shareCode mono">{publishedGame.shareCode ?? publishedGame.id}</div>
             <div className="shareActions">
               {/* Copying the link now lives in the share sheet above, which
                   owns its own "Copied" state. */}
@@ -702,7 +692,7 @@ function CreatorEditor() {
             <details className="shareDetails">
               <summary>Show full share text</summary>
               <pre className="sharePreview mono">
-                {buildGameShareMessage(publishedGame, currentOrigin(), shortJoinUrl)}
+                {buildGameShareMessage(publishedGame, currentOrigin(), inviteUrl)}
               </pre>
             </details>
 

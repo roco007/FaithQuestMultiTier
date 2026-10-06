@@ -235,6 +235,38 @@ export class UpdateHuntDto {
   stops?: HuntStopDto[];
 }
 
+/**
+ * `PATCH /api/v1/hunts/:huntId/stops/order` — the hunt's new **authored**
+ * order, as `HuntNode` ids listed first-to-last.
+ *
+ * Reordering used to have no endpoint at all: the only way to change a stop's
+ * position was to resend the entire `stops` list through `UpdateHuntDto`, which
+ * deletes every `HuntNode` and recreates them. That works, but it makes the
+ * server a blind mirror of whatever array the client happened to send — it never
+ * decides an order, it only records one. This endpoint is the server *deciding*:
+ * the client states the order it wants and the server validates it is a
+ * permutation of the hunt's own stops before writing it.
+ *
+ * Ids are `HuntNode` ids (the hunt's own stops), not `QuestNode` ids, so a stop
+ * cannot be silently replaced by pointing at a different place.
+ */
+export class ReorderHuntStopsDto {
+  @ApiProperty({
+    type: [String],
+    description:
+      'Every `HuntNode` id of this hunt, in the new order (position 0 = first). ' +
+      'Must be an exact permutation: no duplicates, no unknown ids, none omitted.',
+    example: ['6c1f…', '9ab4…', '2de7…'],
+  })
+  @IsArray()
+  @ArrayMinSize(1)
+  // Matches the stop-count ceiling used by `CreateHuntDto` / `UpdateHuntDto`, so
+  // the same hunt cannot be reordered into a shape it could not be created in.
+  @ArrayMaxSize(50)
+  @IsString({ each: true })
+  nodeIds!: string[];
+}
+
 /** `GET /api/v1/hunts` filters. */
 export class FindHuntsQueryDto extends PaginationQueryDto {
   @ApiPropertyOptional({ description: 'Only hunts created by the caller.' })
