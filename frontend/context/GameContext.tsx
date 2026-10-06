@@ -9,17 +9,17 @@ import churchNodesData from '../data/church_nodes.json';
 import { evaluateProximity } from '../utils/geo';
 import { loadPlayerProgress, savePlayerProgress, clearPlayerProgress, INITIAL_PLAYER_PROGRESS } from '../utils/storage';
 import { playSoundEffect, triggerHaptic } from '../utils/sound';
-import { ApiError, isApiConfigured } from '../api/client';
-import { questsApi } from '../api/quests.api';
-import { progressApi } from '../api/progress.api';
-import { badgesApi } from '../api/badges.api';
-import { inventoryApi } from '../api/inventory.api';
+import { ApiError, isApiConfigured } from '@/lib/api/client';
+import { questsApi } from '@/lib/api/quests.api';
+import { progressApi } from '@/lib/api/progress.api';
+import { badgesApi } from '@/lib/api/badges.api';
+import { inventoryApi } from '@/lib/api/inventory.api';
 import type {
   BadgeEntry,
   InventoryEntry,
   ProgressSummary,
   QuestCompletionResult,
-} from '../api/types';
+} from '@/lib/api/types';
 import { useAuth } from './AuthContext';
 
 interface SolveResult {

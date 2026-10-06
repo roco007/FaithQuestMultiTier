@@ -4,9 +4,9 @@ import { useEffect, useState } from 'react';
 import { Trophy, Award, CheckCircle2, Lock, Flame, Users } from 'lucide-react';
 import { useGame } from '../../context/GameContext';
 import { useAuth } from '../../context/AuthContext';
-import { leaderboardApi } from '../../api/leaderboard.api';
-import { ApiError } from '../../api/client';
-import type { LeaderboardEntry } from '../../api/types';
+import { leaderboardApi } from '@/lib/api/leaderboard.api';
+import { ApiError } from '@/lib/api/client';
+import type { LeaderboardEntry } from '@/lib/api/types';
 
 /** Sample field standings — the native build had no backend for this either. */
 interface LeaderboardRow {

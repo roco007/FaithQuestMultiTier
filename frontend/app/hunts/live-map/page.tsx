@@ -9,7 +9,7 @@ import { useHuntPlayers } from '../../../hooks/useHuntPlayers';
 import { playerColor, playerLabel } from '../../../components/mapPins';
 import { localGameRepository } from '../../../services/gameRepository';
 import { formatAgo, formatDuration } from '../../../utils/datetime';
-import type { HuntPlayerDto } from '../../../api/types';
+import type { HuntPlayerDto } from '@/lib/api/types';
 
 /**
  * `/hunts/live-map` — the creator's whole-screen live map.

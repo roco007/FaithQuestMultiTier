@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import type { Map as LeafletMap, Marker } from 'leaflet';
-import type { HuntPlayerDto } from '../api/types';
+import type { HuntPlayerDto } from '@/lib/api/types';
 import { playerColor, playerLabel, playerPinHtml, playerTooltipHtml } from './mapPins';
 
 /** OpenStreetMap standard tiles — see the note in `LeafletGameMap`. */

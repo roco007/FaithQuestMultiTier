@@ -1,4 +1,4 @@
-import { webStorage } from '../utils/webStorage';
+import { webStorage } from '@/utils/webStorage';
 import type { AuthUser } from './types';
 
 /**

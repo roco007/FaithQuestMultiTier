@@ -1,4 +1,4 @@
-import type { HuntPlayerDto } from '../api/types';
+import type { HuntPlayerDto } from '@/lib/api/types';
 import { formatDuration, formatIstPrecise, legDurationMs } from '../utils/datetime';
 
 /**

@@ -1,11 +1,11 @@
-import { isApiConfigured } from '../api/client';
-import { huntsApi } from '../api/hunts.api';
+import { isApiConfigured } from '@/lib/api/client';
+import { huntsApi } from '@/lib/api/hunts.api';
 import type {
   CreateHuntInput,
   HuntStopInput,
   UpdateHuntInput,
-} from '../api/hunts.api';
-import type { HuntCharacterDto, HuntDto } from '../api/types';
+} from '@/lib/api/hunts.api';
+import type { HuntCharacterDto, HuntDto } from '@/lib/api/types';
 import type { HuntGame, HuntCharacter, HuntProgress, HuntQuestion } from '../types/hunt';
 import {
   localGameRepository,

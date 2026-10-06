@@ -19,7 +19,7 @@ import {
   extractShareCode,
 } from '../services/gameRepository';
 import { remoteGameRepository } from '../services/remoteGameRepository';
-import { isApiConfigured } from '../api/client';
+import { isApiConfigured } from '@/lib/api/client';
 import { useAuth } from './AuthContext';
 import { generateCharacterKey, keyMatches } from '../utils/keys';
 import {

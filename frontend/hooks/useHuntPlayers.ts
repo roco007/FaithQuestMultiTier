@@ -1,10 +1,10 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { huntsApi } from '../api/hunts.api';
-import { ApiError, isApiConfigured } from '../api/client';
+import { huntsApi } from '@/lib/api/hunts.api';
+import { ApiError, isApiConfigured } from '@/lib/api/client';
 import { serverIdFor } from '../services/remoteGameRepository';
-import type { HuntPlayersDto } from '../api/types';
+import type { HuntPlayersDto } from '@/lib/api/types';
 
 /** One page of the creator's report, plus its loading and error state. */
 export interface UseHuntPlayers {

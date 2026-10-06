@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { Users, Clock, CheckCircle2, PlayCircle, AlertTriangle } from 'lucide-react';
-import type { HuntPlayerDto } from '../api/types';
+import type { HuntPlayerDto } from '@/lib/api/types';
 import { useHuntPlayers } from '../hooks/useHuntPlayers';
 import { formatDuration, formatIst } from '../utils/datetime';
 import { PlayerLocationsMap, STALE_AFTER_MS } from './PlayerLocationsMap';

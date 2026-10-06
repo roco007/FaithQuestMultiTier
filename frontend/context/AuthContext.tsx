@@ -9,10 +9,10 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { ApiNotConfiguredError, isApiConfigured } from '../api/client';
-import { authApi } from '../api/auth.api';
-import { clearSession, readSession, writeSession } from '../api/session';
-import type { AuthUser, LoginInput, RegisterInput } from '../api/types';
+import { ApiNotConfiguredError, isApiConfigured } from '@/lib/api/client';
+import { authApi } from '@/lib/api/auth.api';
+import { clearSession, readSession, writeSession } from '@/lib/api/session';
+import type { AuthUser, LoginInput, RegisterInput } from '@/lib/api/types';
 
 /**
  * Session state for the whole app: who is signed in, and how to sign in/out.

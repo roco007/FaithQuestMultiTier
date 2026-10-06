@@ -1,8 +1,8 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { huntsApi } from '../api/hunts.api';
-import { isApiConfigured } from '../api/client';
+import { huntsApi } from '@/lib/api/hunts.api';
+import { isApiConfigured } from '@/lib/api/client';
 import { readGuestToken, serverIdFor } from '../services/remoteGameRepository';
 import type { LocationCoordinates } from '../types/game';
 
